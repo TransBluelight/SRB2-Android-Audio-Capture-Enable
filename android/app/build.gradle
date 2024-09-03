@@ -11,7 +11,7 @@ android {
     compileSdkVersion 30
     defaultConfig {
         if (buildAsApplication) {
-            applicationId "org.stjr.srb2"
+            applicationId "org.bluelight.srb2.exp"
         }
 
         minSdkVersion 14
@@ -21,7 +21,7 @@ android {
         externalNativeBuild {
             ndkBuild {
                 arguments "APP_PLATFORM=android-16"
-                abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+                abiFilters 'arm64-v8a'
             }
         }
         flavorDimensions "assets"
