@@ -8,14 +8,14 @@ else {
 }
 
 android {
-    compileSdkVersion 30
+    compileSdkVersion 29
     defaultConfig {
         if (buildAsApplication) {
             applicationId "org.bluelight.srb2.exp"
         }
 
         minSdkVersion 14
-        targetSdkVersion 30
+        targetSdkVersion 29
         versionCode 22131
         versionName "2.2.13"
         externalNativeBuild {
