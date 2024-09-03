@@ -1593,18 +1593,18 @@ msgstr ""
 
 #: f_finale.c:557
 msgid ""
-"Two months had passed since Dr. Eggman\n"
-"tried to take over the world using his\n"
+"Dos meses pasaron desde que el Dr. Eggman\n"
+"intento dominar al mundo usando su\n"
 "Ring Satellite.\n"
 "#"
 msgstr ""
 
 #: f_finale.c:561
 msgid ""
-"As it was about to drain the rings\n"
-"away from the planet, Sonic burst into\n"
-"the Satellite and for what he thought\n"
-"would be the last time, defeated\n"
+"cuando estaba a nada de succionar los rings\n"
+"del planeta, Sonic entro y destrozo\n"
+"el Satellite y penso que esa seria\n"
+"la ultima vez que venceria al\n"
 "Dr. Eggman.\n"
 "#"
 msgstr ""
@@ -1612,17 +1612,17 @@ msgstr ""
 #: f_finale.c:567
 msgid ""
 "\n"
-"What Sonic, Tails, and Knuckles had\n"
-"not anticipated was that Eggman would\n"
-"return, bringing an all new threat.\n"
+"Lo que Sonic, Tails y Knuckles\n"
+"no se esperaban es que Eggman"
+"regresaria, con una nueva amenaza.\n"
 "#"
 msgstr ""
 
 #: f_finale.c:571
 msgid ""
-"About once every year, a strange asteroid\n"
-"hovers around the planet. it suddenly\n"
-"appears from nowhere, circles around, and\n"
+"Una vez al ano, un raro asteroide\n"
+"flota alrededor del planeta.\n"
+"aparece de la nada y flota por unos dias\n"
 "- just as mysteriously as it arrives, it\n"
 "vanishes after about two months.\n"
 "No one knows why it appears, or how.\n"
@@ -2059,11 +2059,11 @@ msgid "No Clipping %s\n"
 msgstr ""
 
 #: m_cheat.c:272 m_cheat.c:292
-msgid "Off"
+msgid "Desactivado"
 msgstr ""
 
 #: m_cheat.c:272 m_cheat.c:292
-msgid "On"
+msgid "Activado"
 msgstr ""
 
 #: m_cheat.c:292
@@ -2073,7 +2073,7 @@ msgstr ""
 
 #: m_cheat.c:315 m_cheat.c:349 m_cheat.c:514 m_cheat.c:538 m_cheat.c:557
 #: m_cheat.c:576
-msgid "This only works in single player.\n"
+msgid "Esto solo funciona en modo un jugador.\n"
 msgstr ""
 
 #: m_cheat.c:321
@@ -3931,7 +3931,7 @@ msgid "GOT PERFECT BONUS EMBLEM!"
 msgstr ""
 
 #: y_inter.c:567
-msgid "Teams will be scrambled next round!"
+msgid "Los equipos seran revueltos en la siguiente ronda!"
 msgstr ""
 
 #: z_zone.c:113
