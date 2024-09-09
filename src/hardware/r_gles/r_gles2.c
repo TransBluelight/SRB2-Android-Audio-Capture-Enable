@@ -1,8 +1,8 @@
 // SONIC ROBO BLAST 2
 //-----------------------------------------------------------------------------
+// Copyright (C) 2020-2021 by Jaime Ita Passos.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
 // Copyright (C) 1998-2021 by Sonic Team Junior.
-// Copyright (C) 2020-2023 by SRB2 Mobile Project.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -18,6 +18,7 @@
 #include "../r_opengl/r_vbo.h"
 
 #include "../shaders/gl_shaders.h"
+#include "../hw_shaders.h"
 
 #include "lzml.h"
 
@@ -42,26 +43,15 @@ fmatrix4_t modelMatrix;
 
 static GLint viewport[4];
 
-typedef void (R_GL_APIENTRY * PFNglVertexAttribPointer) (GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer);
+typedef void (R_GL_APIENTRY * PFNglVertexAttribPointer) (GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void * pointer);
 static PFNglVertexAttribPointer pglVertexAttribPointer;
-
-#define CHECK_GL() CHECK_GL_ERROR("r_gles2.c")
-
-static void gl_VertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer)
-{
-	if (pglVertexAttribPointer)
-	{
-		pglVertexAttribPointer(index, size, type, normalized, stride, pointer);
-		CHECK_GL();
-	}
-}
 
 static void VertexAttribPointerInternal(int attrib, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer, const char *function, const int line)
 {
 	int loc = Shader_AttribLoc(attrib);
 	if (loc == -1)
 		GL_MSG_Error("VertexAttribPointer: generic vertex attribute %s not bound to any attribute variable (from %s:%d)\n", Shader_AttribLocName(attrib), function, line);
-	gl_VertexAttribPointer(loc, size, type, normalized, stride, pointer);
+	pglVertexAttribPointer(loc, size, type, normalized, stride, pointer);
 }
 
 #define VertexAttribPointer(attrib, size, type, normalized, stride, pointer) VertexAttribPointerInternal(attrib, size, type, normalized, stride, pointer, __FUNCTION__, __LINE__)
@@ -79,7 +69,6 @@ boolean GLBackend_LoadFunctions(void)
 	GETOPENGLFUNC(DepthRangef)
 
 	Shader_LoadFunctions();
-	Shader_CleanPrograms();
 
 	return Shader_Compile();
 }
@@ -99,38 +88,68 @@ boolean GLBackend_LoadExtraFunctions(void)
 	return true;
 }
 
-static void SetShader(int type)
+EXPORT void HWRAPI(LoadShader) (int slot, char *code, hwdshaderstage_t stage)
 {
-	if (type == SHADER_NONE)
-	{
-		Shader_UnSet();
-		return;
-	}
-
-	Shader_Set(GLBackend_GetShaderType(type));
+	(void)slot;
+	(void)code;
+	(void)stage;
 }
 
-static boolean CompileShaders(void)
+EXPORT boolean HWRAPI(InitShaders) (void)
+{
+#ifdef GL_SHADERS
+	return Shader_Compile();
+#else
+	return false;
+#endif
+}
+
+EXPORT boolean HWRAPI(InitShaders) (void)
 {
 	return Shader_Compile();
 }
 
-static void SetShaderInfo(hwdshaderinfo_t info, INT32 value)
+EXPORT boolean HWRAPI(CompileShader) (int slot)
+{
+#ifdef GL_SHADERS
+	if (slot < 0 || slot >= HWR_MAXSHADERS)
+		I_Error("CompileShader: Invalid slot %d", slot);
+
+	if (Shader_Compile())
+	{
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+#else
+	(void)slot;
+	return false;
+#endif
+}
+
+EXPORT void HWRAPI(SetShaderInfo) (hwdshaderinfo_t info, INT32 value)
 {
 	Shader_SetInfo(info, value);
 }
 
-static void LoadCustomShader(int number, char *shader, size_t size, boolean fragment)
+EXPORT void HWRAPI(SetShader) (int type)
+{
+	Shader_Set(GLBackend_GetShaderType(type));
+}
+
+EXPORT void HWRAPI(LoadCustomShader) (int number, char *shader, size_t size, boolean fragment)
 {
 	Shader_LoadCustom(number, shader, size, fragment);
 }
 
-static void UnSetShader(void)
+EXPORT void HWRAPI(UnSetShader) (void)
 {
 	Shader_UnSet();
 }
 
-static void CleanShaders(void)
+EXPORT void HWRAPI(CleanShaders) (void)
 {
 	Shader_Clean();
 }
@@ -138,15 +157,30 @@ static void CleanShaders(void)
 // -----------------+
 // SetNoTexture     : Disable texture
 // -----------------+
-static void SetNoTexture(void)
+void SetNoTexture(void)
 {
-	GLTexture_Disable();
+	// Set small white texture.
+	if (tex_downloaded != NOTEXTURE_NUM)
+	{
+		if (NOTEXTURE_NUM == 0)
+		{
+			// Generate a 1x1 white pixel as the blank texture
+			UINT8 whitepixel[4] = {255, 255, 255, 255};
+			pglGenTextures(1, &NOTEXTURE_NUM);
+			pglBindTexture(GL_TEXTURE_2D, NOTEXTURE_NUM);
+			pglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, whitepixel);
+		}
+		else
+			pglBindTexture(GL_TEXTURE_2D, NOTEXTURE_NUM);
+
+		tex_downloaded = NOTEXTURE_NUM;
+	}
 }
 
 static void GLPerspective(GLfloat fovy, GLfloat aspect)
 {
 	fmatrix4_t perspectiveMatrix;
-	lzml_matrix4_perspective(perspectiveMatrix, Deg2Rad((float)fovy), (float)aspect, near_clipping_plane, FAR_CLIPPING_PLANE);
+	lzml_matrix4_perspective(perspectiveMatrix, Deg2Rad((float)fovy), (float)aspect, NEAR_CLIPPING_PLANE, FAR_CLIPPING_PLANE);
 	lzml_matrix4_multiply(projMatrix, perspectiveMatrix);
 }
 
@@ -190,42 +224,33 @@ static void GLProject(GLfloat objX, GLfloat objY, GLfloat objZ,
 	*winZ=in[2];
 }
 
-static void FlushScreenTextures(void)
-{
-	GLTexture_FlushScreen();
-}
-
 // -----------------+
 // SetModelView     :
 // -----------------+
-static void SetModelView(INT32 w, INT32 h)
+void SetModelView(GLint w, GLint h)
 {
 	// The screen textures need to be flushed if the width or height change so that they be remade for the correct size
 	if (screen_width != w || screen_height != h)
 	{
 		FlushScreenTextures();
-#ifdef HAVE_GL_FRAMEBUFFER
 		GLFramebuffer_DeleteAttachments();
-#endif
 	}
 
 	screen_width = w;
 	screen_height = h;
 
-#ifdef HAVE_GL_FRAMEBUFFER
 	RenderToFramebuffer = FramebufferEnabled;
 	GLFramebuffer_Disable();
 
 	if (RenderToFramebuffer)
 	{
-		gl_Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		gl_Viewport(0, 0, w, h);
+		pglClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+		pglViewport(0, 0, w, h);
 		GLFramebuffer_Enable();
 	}
-#endif
 
-	gl_Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	gl_Viewport(0, 0, w, h);
+	pglClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	pglViewport(0, 0, w, h);
 
 	lzml_matrix4_identity(projMatrix);
 	lzml_matrix4_identity(viewMatrix);
@@ -236,31 +261,24 @@ static void SetModelView(INT32 w, INT32 h)
 
 
 // -----------------+
-// SetBlend         : Set blend modes
-// -----------------+
-static void SetBlend(FBITFIELD PolyFlags)
-{
-	GLBackend_SetBlend(PolyFlags);
-}
-
-
-// -----------------+
 // SetStates        : Set permanent states
 // -----------------+
-static void SetStates(void)
+void SetStates(void)
 {
+//	GL_DBG_Printf("SetStates()\n");
+
 	alpha_threshold = 0.0f;
 
-	gl_ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	pglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
-	gl_Enable(GL_DEPTH_TEST);    // check the depth buffer
-	gl_DepthMask(GL_TRUE);             // enable writing to depth buffer
-	gl_ClearDepthf(1.0f);
-	gl_DepthRangef(0.0f, 1.0f);
-	gl_DepthFunc(GL_LEQUAL);
+	pglEnable(GL_DEPTH_TEST);    // check the depth buffer
+	pglDepthMask(GL_TRUE);             // enable writing to depth buffer
+	pglClearDepthf(1.0f);
+	pglDepthRangef(0.0f, 1.0f);
+	pglDepthFunc(GL_LEQUAL);
 
-	gl_Enable(GL_BLEND);
-	gl_BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	pglEnable(GL_BLEND);
+	pglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 	// this set CurrentPolyFlags to the actual configuration
 	CurrentPolyFlags = 0xffffffff;
@@ -281,14 +299,14 @@ static void SetStates(void)
 // -----------------+
 // DeleteTexture    : Deletes a texture from the GPU and frees its data
 // -----------------+
-static void DeleteTexture(GLMipmap_t *pTexInfo)
+EXPORT void HWRAPI(DeleteTexture) (GLMipmap_t *pTexInfo)
 {
 	FTextureInfo *head = TexCacheHead;
 
 	if (!pTexInfo)
 		return;
 	else if (pTexInfo->downloaded)
-		gl_DeleteTextures(1, (GLuint *)&pTexInfo->downloaded);
+		pglDeleteTextures(1, (GLuint *)&pTexInfo->downloaded);
 
 	while (head)
 	{
@@ -317,7 +335,7 @@ static void DeleteTexture(GLMipmap_t *pTexInfo)
 // Init             : Initialise the OpenGL ES interface API
 // Returns          :
 // -----------------+
-static boolean Init(void)
+EXPORT boolean HWRAPI(Init) (void)
 {
 	return GLBackend_Init();
 }
@@ -327,50 +345,66 @@ static boolean Init(void)
 // RecreateContext  : Clears textures, buffer objects, and recompiles shaders.
 // Returns          :
 // -----------------+
-static void RecreateContext(void)
+EXPORT void HWRAPI(RecreateContext) (void)
 {
-	GLBackend_RecreateContext();
-}
-
-
-// -----------------+
-// SetPalette       : Sets the current palette.
-// Returns          :
-// -----------------+
-static void SetPalette(RGBA_t *palette)
-{
-	GLBackend_SetPalette(palette);
+	return GLBackend_RecreateContext();
 }
 
 
 // -----------------+
 // ClearMipMapCache : Flush OpenGL textures from memory
 // -----------------+
-static void ClearMipMapCache(void)
+EXPORT void HWRAPI(ClearMipMapCache) (void)
 {
+	// GL_DBG_Printf ("HWR_Flush(exe)\n");
 	GLTexture_Flush();
 }
 
 
-// -----------------+
-// ReadRect         : Read a rectangle region of the truecolor framebuffer
-//                  : store pixels as RGBA8888
-// Returns          : RGBA8888 pixel array stored in dst_data
-// -----------------+
-static void ReadRect(INT32 x, INT32 y, INT32 width, INT32 height, INT32 dst_stride, UINT32 *dst_data)
+// Writes screen texture tex into dst_data.
+// Pixel format is 24-bit RGB. Row order is top to bottom.
+// Dimensions are screen_width * screen_height.
+EXPORT void HWRAPI(ReadScreenTexture) (int tex, UINT8 *dst_data)
 {
-	(void)dst_stride;
-	GLBackend_ReadRectRGBA(x, y, width, height, dst_data);
+	INT32 i;
+	int dst_stride = screen_width * 3; // stride between rows of image data
+	GLubyte*top = (GLvoid*)dst_data, *bottom = top + dst_stride * (screen_height - 1);
+	GLubyte *row;
+	row = malloc(dst_stride);
+	if (!row) return;
+	// at the time this function is called, generic2 can be found drawn on the framebuffer
+	// if some other screen texture is needed, draw it to the framebuffer
+	// and draw generic2 back after reading the framebuffer.
+	// this hack is for some reason **much** faster than the simple solution of using glGetTexImage.
+	if (tex != HWD_SCREENTEXTURE_GENERIC2)
+		DrawScreenTexture(tex, NULL, 0);
+	pglPixelStorei(GL_PACK_ALIGNMENT, 1);
+	pglReadPixels(0, 0, screen_width, screen_height, GL_RGB, GL_UNSIGNED_BYTE, dst_data);
+	if (tex != HWD_SCREENTEXTURE_GENERIC2)
+		DrawScreenTexture(HWD_SCREENTEXTURE_GENERIC2, NULL, 0);
+	// Flip image upside down.
+	// In other words, convert OpenGL's "bottom->top" row order into "top->bottom".
+	for(i = 0; i < screen_height/2; i++)
+	{
+		memcpy(row, top, dst_stride);
+		memcpy(top, bottom, dst_stride);
+		memcpy(bottom, row, dst_stride);
+		top += dst_stride;
+		bottom -= dst_stride;
+	}
+	free(row);
 }
 
 
 // -----------------+
 // GClipRect        : Defines the 2D hardware clipping window
 // -----------------+
-static void GClipRect(INT32 minx, INT32 miny, INT32 maxx, INT32 maxy, float nearclip)
+EXPORT void HWRAPI(GClipRect) (INT32 minx, INT32 miny, INT32 maxx, INT32 maxy, float nearclip)
 {
-	gl_Viewport(minx, screen_height-maxy, maxx-minx, maxy-miny);
-	near_clipping_plane = nearclip;
+	// GL_DBG_Printf ("GClipRect(%d, %d, %d, %d)\n", minx, miny, maxx, maxy);
+
+	pglViewport(minx, screen_height-maxy, maxx-minx, maxy-miny);
+	NEAR_CLIPPING_PLANE = nearclip;
 
 	lzml_matrix4_identity(projMatrix);
 	lzml_matrix4_identity(viewMatrix);
@@ -383,14 +417,17 @@ static void GClipRect(INT32 minx, INT32 miny, INT32 maxx, INT32 maxy, float near
 // -----------------+
 // ClearBuffer      : Clear the color/alpha/depth buffer(s)
 // -----------------+
-static void ClearBuffer(FBOOLEAN ColorMask, FBOOLEAN DepthMask, FRGBAFloat *ClearColor)
+EXPORT void HWRAPI(ClearBuffer) (FBOOLEAN ColorMask,
+                                    FBOOLEAN DepthMask,
+                                    FRGBAFloat * ClearColor)
 {
+	// GL_DBG_Printf ("ClearBuffer(%d)\n", alpha);
 	GLbitfield ClearMask = 0;
 
 	if (ColorMask)
 	{
 		if (ClearColor)
-			gl_ClearColor(ClearColor->red,
+			pglClearColor(ClearColor->red,
 			              ClearColor->green,
 			              ClearColor->blue,
 			              ClearColor->alpha);
@@ -398,15 +435,15 @@ static void ClearBuffer(FBOOLEAN ColorMask, FBOOLEAN DepthMask, FRGBAFloat *Clea
 	}
 	if (DepthMask)
 	{
-		gl_ClearDepthf(1.0f);     //Hurdler: all that are permanen states
-		gl_DepthRangef(0.0f, 1.0f);
-		gl_DepthFunc(GL_LEQUAL);
+		pglClearDepthf(1.0f);     //Hurdler: all that are permanen states
+		pglDepthRangef(0.0f, 1.0f);
+		pglDepthFunc(GL_LEQUAL);
 		ClearMask |= GL_DEPTH_BUFFER_BIT;
 	}
 
 	SetBlend(DepthMask ? PF_Occlude | CurrentPolyFlags : CurrentPolyFlags&~PF_Occlude);
 
-	gl_Clear(ClearMask);
+	pglClear(ClearMask);
 
 	if (gl_shaderstate.current)
 	{
@@ -421,8 +458,11 @@ static void ClearBuffer(FBOOLEAN ColorMask, FBOOLEAN DepthMask, FRGBAFloat *Clea
 // -----------------+
 // HWRAPI Draw2DLine: Render a 2D line
 // -----------------+
-static void Draw2DLine(F2DCoord *v1, F2DCoord *v2, RGBA_t Color)
+EXPORT void HWRAPI(Draw2DLine) (F2DCoord * v1,
+                                   F2DCoord * v2,
+                                   RGBA_t Color)
 {
+	// GL_DBG_Printf ("DrawLine() (%f %f %f) %d\n", v1->x, -v1->y, -v1->z, v1->argb);
 	GLfloat p[12];
 	GLfloat dx, dy;
 	GLfloat angle;
@@ -450,18 +490,26 @@ static void Draw2DLine(F2DCoord *v1, F2DCoord *v2, RGBA_t Color)
 	Shader_SetUniforms(NULL, &fcolor, NULL, NULL);
 
 	VertexAttribPointer(LOC_POSITION, 3, GL_FLOAT, GL_FALSE, 0, p);
-	gl_DrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	pglDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 }
 
-static void SetClamp(UINT32 clamp)
+void SetClamp(GLenum pname)
 {
-	gl_TexParameteri(GL_TEXTURE_2D, (GLenum)clamp, GL_CLAMP_TO_EDGE);
+	pglTexParameteri(GL_TEXTURE_2D, pname, GL_CLAMP_TO_EDGE);
+}
+
+// -----------------+
+// SetBlend         : Set render mode
+// -----------------+
+EXPORT void HWRAPI(SetBlend) (FBITFIELD PolyFlags)
+{
+	SetBlendingStates(PolyFlags);
 }
 
 // -----------------+
 // UpdateTexture    : Updates the texture data.
 // -----------------+
-static void UpdateTexture(GLMipmap_t *pTexInfo)
+EXPORT void HWRAPI(UpdateTexture) (GLMipmap_t *pTexInfo)
 {
 	// Upload a texture
 	GLuint num = pTexInfo->downloaded;
@@ -477,7 +525,7 @@ static void UpdateTexture(GLMipmap_t *pTexInfo)
 	// Generate a new texture name.
 	if (!num)
 	{
-		gl_GenTextures(1, &num);
+		pglGenTextures(1, &num);
 		pTexInfo->downloaded = num;
 		update = false;
 	}
@@ -561,47 +609,47 @@ static void UpdateTexture(GLMipmap_t *pTexInfo)
 		}
 	}
 
-	gl_BindTexture(GL_TEXTURE_2D, num);
+	pglBindTexture(GL_TEXTURE_2D, num);
 	tex_downloaded = num;
 
 	// disable texture filtering on any texture that has holes so there's no dumb borders or blending issues
 	if (pTexInfo->flags & TF_TRANSPARENT)
 	{
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	}
 	else
 	{
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_filter);
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_filter);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter);
 	}
 
 	if (pTexInfo->flags & TF_WRAPX)
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
 	else
 		SetClamp(GL_TEXTURE_WRAP_S);
 
 	if (pTexInfo->flags & TF_WRAPY)
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 	else
 		SetClamp(GL_TEXTURE_WRAP_T);
 
 	if (GLExtension_texture_filter_anisotropic)
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, anisotropic_filter);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, anisotropic_filter);
 
 	if (update)
-		gl_TexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, ptex);
+		pglTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, ptex);
 	else
-		gl_TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, ptex);
+		pglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, ptex);
 
 	if (MipmapEnabled)
-		gl_GenerateMipmap(GL_TEXTURE_2D);
+		pglGenerateMipmap(GL_TEXTURE_2D);
 }
 
 // -----------------+
 // SetTexture       : The mipmap becomes the current texture source
 // -----------------+
-static void SetTexture(GLMipmap_t *pTexInfo)
+EXPORT void HWRAPI(SetTexture) (GLMipmap_t *pTexInfo)
 {
 	if (!pTexInfo)
 	{
@@ -612,7 +660,7 @@ static void SetTexture(GLMipmap_t *pTexInfo)
 	{
 		if (pTexInfo->downloaded != tex_downloaded)
 		{
-			gl_BindTexture(GL_TEXTURE_2D, pTexInfo->downloaded);
+			pglBindTexture(GL_TEXTURE_2D, pTexInfo->downloaded);
 			tex_downloaded = pTexInfo->downloaded;
 		}
 	}
@@ -694,6 +742,14 @@ static void PreparePolygon(FSurfaceInfo *pSurf, FOutVector *pOutVerts, FBITFIELD
 
 			c_tint = &tint;
 			c_fade = &fade;
+
+			if (pSurf->LightTableId && pSurf->LightTableId != lt_downloaded)
+			{
+				pglActiveTexture(GL_TEXTURE2);
+				pglBindTexture(GL_TEXTURE_2D, pSurf->LightTableId);
+				pglActiveTexture(GL_TEXTURE0);
+				lt_downloaded = pSurf->LightTableId;
+			}
 		}
 	}
 	else
@@ -712,16 +768,16 @@ static void DrawPolygon_GLES2(FSurfaceInfo *pSurf, FOutVector *pOutVerts, FUINT 
 
 	PreparePolygon(pSurf, pOutVerts, PolyFlags, shader);
 
-	gl_BindBuffer(GL_ARRAY_BUFFER, 0);
+	pglBindBuffer(GL_ARRAY_BUFFER, 0);
 
 	VertexAttribPointer(LOC_POSITION, 3, GL_FLOAT, GL_FALSE, sizeof(FOutVector), &pOutVerts[0].x);
 	if (Shader_AttribLoc(LOC_TEXCOORD) != -1)
 		VertexAttribPointer(LOC_TEXCOORD, 2, GL_FLOAT, GL_FALSE, sizeof(FOutVector), &pOutVerts[0].s);
 
-	gl_DrawArrays(PolyFlags & PF_WireFrame ? GL_LINES : GL_TRIANGLE_FAN, 0, iNumPts);
+	pglDrawArrays(GL_TRIANGLE_FAN, 0, iNumPts);
 
 	if (PolyFlags & PF_RemoveYWrap)
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
 	if (PolyFlags & PF_ForceWrapX)
 		SetClamp(GL_TEXTURE_WRAP_S);
@@ -730,35 +786,35 @@ static void DrawPolygon_GLES2(FSurfaceInfo *pSurf, FOutVector *pOutVerts, FUINT 
 		SetClamp(GL_TEXTURE_WRAP_T);
 }
 
-static void DrawPolygon(FSurfaceInfo *pSurf, FOutVector *pOutVerts, FUINT iNumPts, FBITFIELD PolyFlags)
+EXPORT void HWRAPI(DrawPolygon) (FSurfaceInfo *pSurf, FOutVector *pOutVerts, FUINT iNumPts, FBITFIELD PolyFlags)
 {
 	DrawPolygon_GLES2(pSurf, pOutVerts, iNumPts, PolyFlags, 0);
 }
 
-static void DrawPolygonShader(FSurfaceInfo *pSurf, FOutVector *pOutVerts, FUINT iNumPts, FBITFIELD PolyFlags, INT32 shader)
+EXPORT void HWRAPI(DrawPolygonShader) (FSurfaceInfo *pSurf, FOutVector *pOutVerts, FUINT iNumPts, FBITFIELD PolyFlags, INT32 shader)
 {
 	DrawPolygon_GLES2(pSurf, pOutVerts, iNumPts, PolyFlags, shader);
 }
 
-static void DrawIndexedTriangles(FSurfaceInfo *pSurf, FOutVector *pOutVerts, FUINT iNumPts, FBITFIELD PolyFlags, UINT32 *IndexArray)
+EXPORT void HWRAPI(DrawIndexedTriangles) (FSurfaceInfo *pSurf, FOutVector *pOutVerts, FUINT iNumPts, FBITFIELD PolyFlags, UINT32 *IndexArray)
 {
 	if (gl_shaderstate.current == NULL)
 		return;
 
 	PreparePolygon(pSurf, pOutVerts, PolyFlags, 0);
 
-	gl_BindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+	pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
 	VertexAttribPointer(LOC_POSITION, 3, GL_FLOAT, GL_FALSE, sizeof(FOutVector), &pOutVerts[0].x);
 	if (Shader_AttribLoc(LOC_TEXCOORD) != -1)
 		VertexAttribPointer(LOC_TEXCOORD, 2, GL_FLOAT, GL_FALSE, sizeof(FOutVector), &pOutVerts[0].s);
 
-	gl_DrawElements(GL_TRIANGLES, iNumPts, GL_UNSIGNED_INT, IndexArray);
+	pglDrawElements(GL_TRIANGLES, iNumPts, GL_UNSIGNED_INT, IndexArray);
 
 	// the DrawPolygon variant of this has some code about polyflags and wrapping here but havent noticed any problems from omitting it?
 }
 
-static void RenderSkyDome(gl_sky_t *sky)
+EXPORT void HWRAPI(RenderSkyDome) (gl_sky_t *sky)
 {
 	int i, j;
 
@@ -772,40 +828,35 @@ static void RenderSkyDome(gl_sky_t *sky)
 	{
 		// delete VBO when already exists
 		if (sky->vbo)
-			gl_DeleteBuffers(1, &sky->vbo);
+			pglDeleteBuffers(1, &sky->vbo);
 
 		// generate a new VBO and get the associated ID
-		gl_GenBuffers(1, &sky->vbo);
+		pglGenBuffers(1, &sky->vbo);
 
 		// bind VBO in order to use
-		gl_BindBuffer(GL_ARRAY_BUFFER, sky->vbo);
+		pglBindBuffer(GL_ARRAY_BUFFER, sky->vbo);
 
 		// upload data to VBO
-		gl_BufferData(GL_ARRAY_BUFFER, sky->vertex_count * sizeof(sky->data[0]), sky->data, GL_STATIC_DRAW);
+		pglBufferData(GL_ARRAY_BUFFER, sky->vertex_count * sizeof(sky->data[0]), sky->data, GL_STATIC_DRAW);
 
 		sky->rebuild = false;
 	}
 
 	if (gl_shaderstate.current == NULL)
 	{
-		gl_BindBuffer(GL_ARRAY_BUFFER, 0);
+		pglBindBuffer(GL_ARRAY_BUFFER, 0);
 		return;
 	}
 
 	// bind VBO in order to use
-	gl_BindBuffer(GL_ARRAY_BUFFER, sky->vbo);
+	pglBindBuffer(GL_ARRAY_BUFFER, sky->vbo);
 
 	// activate and specify pointers to arrays
+	Shader_EnableVertexAttribArray(LOC_COLORS);
 	VertexAttribPointer(LOC_POSITION, 3, GL_FLOAT, GL_FALSE, sizeof(sky->data[0]), sky_vbo_x);
 	if (Shader_AttribLoc(LOC_TEXCOORD) != -1)
 		VertexAttribPointer(LOC_TEXCOORD, 2, GL_FLOAT, GL_FALSE, sizeof(sky->data[0]), sky_vbo_u);
-
-	int attrib_colors = Shader_AttribLoc(LOC_COLORS);
-	if (attrib_colors != -1)
-	{
-		Shader_EnableVertexAttribArray(LOC_COLORS);
-		VertexAttribPointer(LOC_COLORS, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(sky->data[0]), sky_vbo_r);
-	}
+	VertexAttribPointer(LOC_COLORS, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(sky->data[0]), sky_vbo_r);
 
 	// set transforms
 	scale[1] = (float)sky->height / 200.0f;
@@ -836,21 +887,23 @@ static void RenderSkyDome(gl_sky_t *sky)
 					continue;
 			}
 
-			gl_DrawArrays(mode, loop->vertexindex, loop->vertexcount);
+			pglDrawArrays(mode, loop->vertexindex, loop->vertexcount);
 		}
 	}
 
-	if (attrib_colors != -1)
-		Shader_DisableVertexAttribArray(LOC_COLORS);
+	Shader_DisableVertexAttribArray(LOC_COLORS);
 
-	gl_BindBuffer(GL_ARRAY_BUFFER, 0);
+	// bind with 0, so, switch back to normal pointer operation
+	pglBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-static void SetSpecialState(hwdspecialstate_t IdState, INT32 Value)
+// ==========================================================================
+//
+// ==========================================================================
+EXPORT void HWRAPI(SetSpecialState) (hwdspecialstate_t IdState, INT32 Value)
 {
 	switch (IdState)
 	{
-#ifdef HAVE_GL_FRAMEBUFFER
 		case HWD_SET_FRAMEBUFFER:
 			FramebufferEnabled = Value ? GL_TRUE : GL_FALSE;
 			break;
@@ -858,13 +911,13 @@ static void SetSpecialState(hwdspecialstate_t IdState, INT32 Value)
 		case HWD_SET_RENDERBUFFER_DEPTH:
 			GLFramebuffer_SetDepth(Value);
 			break;
-#endif
+
 		case HWD_SET_MODEL_LIGHTING:
 			model_lighting = Value;
 			break;
 
 		case HWD_SET_SHADERS:
-			gl_allowshaders = (hwdshaderoption_t)Value;
+			gl_allowshaders = (hwdshaderstage_t)Value;
 			break;
 
 		case HWD_SET_TEXTUREFILTERMODE:
@@ -882,37 +935,23 @@ static void SetSpecialState(hwdspecialstate_t IdState, INT32 Value)
 
 		case HWD_SET_DITHER:
 			if (Value)
-				gl_Enable(GL_DITHER);
+				pglEnable(GL_DITHER);
 			else
-				gl_Disable(GL_DITHER);
+				pglDisable(GL_DITHER);
 
 		default:
 			break;
 	}
 }
 
-static void CreateModelVBOs(model_t *model)
+EXPORT void HWRAPI(CreateModelVBOs) (model_t *model)
 {
 	GLModel_GenerateVBOs(model);
 }
 
-static void DeleteModelVBOs(model_t *model)
-{
-	GLModel_DeleteVBOs(model);
-}
-
-static void DeleteModelData(void)
-{
-	GLBackend_DeleteModelData();
-}
-
 #define BUFFER_OFFSET(i) ((void*)(i))
 
-// -----------------+
-// HWRAPI DrawModel : Draw a model
-// -----------------+
-static void DrawModel(model_t *model, INT32 frameIndex, float duration, float tics, INT32 nextFrameIndex, FTransform *pos, float hscale, float vscale, UINT8 flipped, UINT8 hflipped, FSurfaceInfo *Surface)
-{
+static void DrawModelEx(model_t *model, INT32 frameIndex, float duration, float tics, INT32 nextFrameIndex, FTransform *pos, float hscale, float vscale, UINT8 flipped, UINT8 hflipped, FSurfaceInfo *Surface) {
 	static GLRGBAFloat poly = {1.0f, 1.0f, 1.0f, 1.0f};
 	static GLRGBAFloat tint = {1.0f, 1.0f, 1.0f, 1.0f};
 	static GLRGBAFloat fade = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -929,21 +968,13 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 	FBITFIELD flags;
 	int i;
 
-	Shader_SetIfChanged(gl_shaderstate.current);
-
-	Shader_EnableVertexAttribArray(LOC_TEXCOORD);
-	Shader_EnableVertexAttribArray(LOC_POSITION);
-	Shader_DisableVertexAttribArray(LOC_COLORS);
-
 	if (gl_shaderstate.current == NULL)
 		return;
 
 	// Affect input model scaling
 	hscale *= 0.5f;
 	vscale *= 0.5f;
-	v_scale[0] = hscale;
-	v_scale[1] = vscale;
-	v_scale[2] = hscale;
+	v_scale[0] = v_scale[1] = v_scale[2] = vscale;
 
 	if (duration > 0.0 && tics >= 0.0) // don't interpolate if instantaneous or infinite in length
 	{
@@ -973,14 +1004,30 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 	fade.blue  = (Surface->FadeColor.s.blue/255.0f);
 	fade.alpha = (Surface->FadeColor.s.alpha/255.0f);
 
-	useNormals = model_lighting && (Shader_AttribLoc(LOC_NORMAL) != -1);
+	useNormals = (model_lighting && (Shader_AttribLoc(LOC_NORMAL) != -1));
 	if (useNormals)
 		Shader_EnableVertexAttribArray(LOC_NORMAL);
 
+	flags = (Surface->PolyFlags | PF_Modulated);
+	if (Surface->PolyFlags & (PF_Additive|PF_Subtractive|PF_ReverseSubtract|PF_Multiplicative))
+		flags |= PF_Occlude;
+	else if (Surface->PolyColor.s.alpha == 0xFF)
+		flags |= (PF_Occlude | PF_Masked);
+
+	if (Surface->LightTableId && Surface->LightTableId != lt_downloaded)
+	{
+		pglActiveTexture(GL_TEXTURE2);
+		pglBindTexture(GL_TEXTURE_2D, Surface->LightTableId);
+		pglActiveTexture(GL_TEXTURE0);
+		lt_downloaded = Surface->LightTableId;
+	}
+
+	SetBlend(flags);
 	Shader_SetUniforms(Surface, &poly, &tint, &fade);
 
-	gl_Enable(GL_CULL_FACE);
+	pglEnable(GL_CULL_FACE);
 
+#ifdef USE_FTRANSFORM_MIRROR
 	// flipped is if the object is vertically flipped
 	// hflipped is if the object is horizontally flipped
 	// pos->flip is if the screen is flipped vertically
@@ -989,10 +1036,21 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 	{
 		boolean reversecull = (flipped ^ hflipped ^ pos->flip ^ pos->mirror);
 		if (reversecull)
-			gl_CullFace(GL_FRONT);
+			pglCullFace(GL_FRONT);
 		else
-			gl_CullFace(GL_BACK);
+			pglCullFace(GL_BACK);
 	}
+#else
+	// pos->flip is if the screen is flipped too
+	if (flipped ^ hflipped ^ pos->flip) // If one or three of these are active, but not two, invert the model's culling
+	{
+		pglCullFace(GL_FRONT);
+	}
+	else
+	{
+		pglCullFace(GL_BACK);
+	}
+#endif
 
 	lzml_matrix4_identity(modelMatrix);
 
@@ -1006,9 +1064,9 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 	if (hflipped)
 		v_scale[2] = -v_scale[2];
 
-	lzml_matrix4_rotate_z(modelMatrix, -Deg2Rad(pos->anglez));
-	lzml_matrix4_rotate_x(modelMatrix, Deg2Rad(pos->anglex));
+	lzml_matrix4_rotate_z(modelMatrix, -Deg2Rad(pos->anglez)); // rotate by slope from Kart
 	lzml_matrix4_rotate_y(modelMatrix, -Deg2Rad(pos->angley));
+	lzml_matrix4_rotate_x(modelMatrix, Deg2Rad(pos->anglex));
 
 	if (pos->roll)
 	{
@@ -1065,7 +1123,7 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 			{
 				if (useVBO)
 				{
-					gl_BindBuffer(GL_ARRAY_BUFFER, frame->vboID);
+					pglBindBuffer(GL_ARRAY_BUFFER, frame->vboID);
 
 					VertexAttribPointer(LOC_POSITION, 3, GL_SHORT, GL_FALSE, sizeof(vbotiny_t), BUFFER_OFFSET(0));
 					if (Shader_AttribLoc(LOC_TEXCOORD) != -1)
@@ -1073,8 +1131,8 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 					if (useNormals)
 						VertexAttribPointer(LOC_NORMAL, 3, GL_BYTE, GL_TRUE, sizeof(vbotiny_t), BUFFER_OFFSET(sizeof(short)*3));
 
-					gl_DrawElements(GL_TRIANGLES, mesh->numTriangles * 3, GL_UNSIGNED_SHORT, mesh->indices);
-					gl_BindBuffer(GL_ARRAY_BUFFER, 0);
+					pglDrawElements(GL_TRIANGLES, mesh->numTriangles * 3, GL_UNSIGNED_SHORT, mesh->indices);
+					pglBindBuffer(GL_ARRAY_BUFFER, 0);
 				}
 				else
 				{
@@ -1084,7 +1142,7 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 					if (useNormals)
 						VertexAttribPointer(LOC_NORMAL, 3, GL_BYTE, GL_TRUE, 0, frame->normals);
 
-					gl_DrawElements(GL_TRIANGLES, mesh->numTriangles * 3, GL_UNSIGNED_SHORT, mesh->indices);
+					pglDrawElements(GL_TRIANGLES, mesh->numTriangles * 3, GL_UNSIGNED_SHORT, mesh->indices);
 				}
 			}
 			else
@@ -1111,7 +1169,7 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 				if (useNormals)
 					VertexAttribPointer(LOC_NORMAL, 3, GL_BYTE, GL_TRUE, 0, normTinyBuffer);
 
-				gl_DrawElements(GL_TRIANGLES, mesh->numTriangles * 3, GL_UNSIGNED_SHORT, mesh->indices);
+				pglDrawElements(GL_TRIANGLES, mesh->numTriangles * 3, GL_UNSIGNED_SHORT, mesh->indices);
 			}
 		}
 		else
@@ -1127,7 +1185,7 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 				if (useVBO)
 				{
 					// Zoom! Take advantage of just shoving the entire arrays to the GPU.
-					gl_BindBuffer(GL_ARRAY_BUFFER, frame->vboID);
+					pglBindBuffer(GL_ARRAY_BUFFER, frame->vboID);
 
 					VertexAttribPointer(LOC_POSITION, 3, GL_FLOAT, GL_FALSE, sizeof(vbo64_t), BUFFER_OFFSET(0));
 					if (Shader_AttribLoc(LOC_TEXCOORD) != -1)
@@ -1135,8 +1193,8 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 					if (useNormals)
 						VertexAttribPointer(LOC_NORMAL, 3, GL_FLOAT, GL_FALSE, sizeof(vbo64_t), BUFFER_OFFSET(sizeof(float) * 3));
 
-					gl_DrawArrays(GL_TRIANGLES, 0, mesh->numTriangles * 3);
-					gl_BindBuffer(GL_ARRAY_BUFFER, 0);
+					pglDrawArrays(GL_TRIANGLES, 0, mesh->numTriangles * 3);
+					pglBindBuffer(GL_ARRAY_BUFFER, 0);
 				}
 				else
 				{
@@ -1146,7 +1204,7 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 					if (useNormals)
 						VertexAttribPointer(LOC_NORMAL, 3, GL_FLOAT, GL_FALSE, 0, frame->normals);
 
-					gl_DrawArrays(GL_TRIANGLES, 0, mesh->numTriangles * 3);
+					pglDrawArrays(GL_TRIANGLES, 0, mesh->numTriangles * 3);
 				}
 			}
 			else
@@ -1173,7 +1231,7 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 				if (useNormals)
 					VertexAttribPointer(LOC_NORMAL, 3, GL_FLOAT, GL_TRUE, 0, normBuffer);
 
-				gl_DrawArrays(GL_TRIANGLES, 0, mesh->numVertices);
+				pglDrawArrays(GL_TRIANGLES, 0, mesh->numVertices);
 			}
 		}
 	}
@@ -1184,34 +1242,52 @@ static void DrawModel(model_t *model, INT32 frameIndex, float duration, float ti
 	if (useNormals)
 		Shader_DisableVertexAttribArray(LOC_NORMAL);
 
-	gl_Disable(GL_CULL_FACE);
+	pglDisable(GL_CULL_FACE);
+}
+
+// -----------------+
+// HWRAPI DrawModel : Draw a model
+// -----------------+
+EXPORT void HWRAPI(DrawModel) (model_t *model, INT32 frameIndex, float duration, float tics, INT32 nextFrameIndex, FTransform *pos, float hscale, float vscale, UINT8 flipped, UINT8 hflipped, FSurfaceInfo *Surface)
+{
+	Shader_SetIfChanged(gl_shaderstate.current);
+
+	Shader_EnableVertexAttribArray(LOC_TEXCOORD);
+	Shader_EnableVertexAttribArray(LOC_POSITION);
+	Shader_DisableVertexAttribArray(LOC_COLORS);
+
+	DrawModelEx(model, frameIndex, duration, tics, nextFrameIndex, pos, hscale, vscale, flipped, hflipped, Surface);
 }
 
 // -----------------+
 // SetTransform     :
 // -----------------+
-static void SetTransform(FTransform *stransform)
+EXPORT void HWRAPI(SetTransform) (FTransform *stransform)
 {
 	static boolean special_splitscreen;
 	boolean shearing = false;
 	float used_fov;
+
+	fvector3_t scale;
 
 	lzml_matrix4_identity(viewMatrix);
 	lzml_matrix4_identity(modelMatrix);
 
 	if (stransform)
 	{
-		fvector3_t scale;
-
 		used_fov = stransform->fovxangle;
 
+#ifdef USE_FTRANSFORM_MIRROR
+		// mirroring from Kart
 		if (stransform->mirror)
 		{
 			scale[0] = -stransform->scalex;
-			scale[1] = stransform->scaley;
+			scale[1] = -stransform->scaley;
 			scale[2] = -stransform->scalez;
 		}
-		else if (stransform->flip)
+		else
+#endif
+		if (stransform->flip)
 		{
 			scale[0] = stransform->scalex;
 			scale[1] = -stransform->scaley;
@@ -1267,12 +1343,12 @@ static void SetTransform(FTransform *stransform)
 	Shader_SetTransform();
 }
 
-static INT32 GetTextureUsed(void)
+EXPORT INT32 HWRAPI(GetTextureUsed) (void)
 {
 	return GLTexture_GetMemoryUsage(TexCacheHead);
 }
 
-static void PostImgRedraw(float points[SCREENVERTS][SCREENVERTS][2])
+EXPORT void HWRAPI(PostImgRedraw) (float points[SCREENVERTS][SCREENVERTS][2])
 {
 	INT32 x, y;
 	float float_x, float_y, float_nextx, float_nexty;
@@ -1298,8 +1374,8 @@ static void PostImgRedraw(float points[SCREENVERTS][SCREENVERTS][2])
 	xfix = (float)(texsize)/((float)((screen_width)/(float)(SCREENVERTS-1)));
 	yfix = (float)(texsize)/((float)((screen_height)/(float)(SCREENVERTS-1)));
 
-	gl_Disable(GL_DEPTH_TEST);
-	gl_Disable(GL_BLEND);
+	pglDisable(GL_DEPTH_TEST);
+	pglDisable(GL_BLEND);
 
 	Shader_DisableVertexAttribArray(LOC_TEXCOORD);
 
@@ -1307,7 +1383,7 @@ static void PostImgRedraw(float points[SCREENVERTS][SCREENVERTS][2])
 	// so nothing shows through the edges
 	Shader_SetUniforms(NULL, &black, NULL, NULL);
 	VertexAttribPointer(LOC_POSITION, 3, GL_FLOAT, GL_FALSE, 0, blackBack);
-	gl_DrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	pglDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
 	Shader_EnableVertexAttribArray(LOC_TEXCOORD);
 	Shader_SetUniforms(NULL, &white, NULL, NULL);
@@ -1355,16 +1431,21 @@ static void PostImgRedraw(float points[SCREENVERTS][SCREENVERTS][2])
 
 			VertexAttribPointer(LOC_POSITION, 3, GL_FLOAT, GL_FALSE, 0, vertCoords);
 
-			gl_DrawArrays(GL_TRIANGLE_FAN, 0, 4);
+			pglDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 		}
 	}
 
-	gl_Enable(GL_DEPTH_TEST);
-	gl_Enable(GL_BLEND);
+	pglEnable(GL_DEPTH_TEST);
+	pglEnable(GL_BLEND);
+}
+
+EXPORT void HWRAPI(FlushScreenTextures) (void)
+{
+	GLTexture_FlushScreen();
 }
 
 // Create Screen to fade from
-static void StartScreenWipe(void)
+EXPORT void HWRAPI(StartScreenWipe) (void)
 {
 	INT32 texsize = 512;
 	boolean firstTime = (startScreenWipe == 0);
@@ -1375,25 +1456,25 @@ static void StartScreenWipe(void)
 
 	// Create screen texture
 	if (firstTime)
-		gl_GenTextures(1, &startScreenWipe);
-	gl_BindTexture(GL_TEXTURE_2D, startScreenWipe);
+		pglGenTextures(1, &startScreenWipe);
+	pglBindTexture(GL_TEXTURE_2D, startScreenWipe);
 
 	if (firstTime)
 	{
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 		SetClamp(GL_TEXTURE_WRAP_S);
 		SetClamp(GL_TEXTURE_WRAP_T);
-		gl_CopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 0, 0, texsize, texsize, 0);
+		pglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 0, 0, texsize, texsize, 0);
 	}
 	else
-		gl_CopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, texsize, texsize);
+		pglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, texsize, texsize);
 
 	tex_downloaded = startScreenWipe;
 }
 
 // Create Screen to fade to
-static void EndScreenWipe(void)
+EXPORT void HWRAPI(EndScreenWipe)(void)
 {
 	INT32 texsize = 512;
 	boolean firstTime = (endScreenWipe == 0);
@@ -1404,26 +1485,26 @@ static void EndScreenWipe(void)
 
 	// Create screen texture
 	if (firstTime)
-		gl_GenTextures(1, &endScreenWipe);
-	gl_BindTexture(GL_TEXTURE_2D, endScreenWipe);
+		pglGenTextures(1, &endScreenWipe);
+	pglBindTexture(GL_TEXTURE_2D, endScreenWipe);
 
 	if (firstTime)
 	{
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 		SetClamp(GL_TEXTURE_WRAP_S);
 		SetClamp(GL_TEXTURE_WRAP_T);
-		gl_CopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 0, 0, texsize, texsize, 0);
+		pglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 0, 0, texsize, texsize, 0);
 	}
 	else
-		gl_CopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, texsize, texsize);
+		pglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, texsize, texsize);
 
 	tex_downloaded = endScreenWipe;
 }
 
 
 // Draw the last scene under the intermission
-static void DrawIntermissionBG(void)
+EXPORT void HWRAPI(DrawIntermissionBG)(void)
 {
 	INT32 texsize = 512;
 	float xfix, yfix;
@@ -1460,16 +1541,18 @@ static void DrawIntermissionBG(void)
 	fix[6] = xfix;
 	fix[7] = 0.0f;
 
-	gl_Clear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+	pglClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
-	gl_BindTexture(GL_TEXTURE_2D, screentexture);
-	Shader_SetUniforms(NULL, &white, NULL, NULL);
+	pglBindTexture(GL_TEXTURE_2D, screenTextures[tex]);
+	PreparePolygon(surf, NULL, surf ? polyflags : (PF_NoDepthTest));
+	if (!surf)
+		Shader_SetUniforms(NULL, &white, NULL, NULL);
 
 	VertexAttribPointer(LOC_POSITION, 3, GL_FLOAT, GL_FALSE, 0, screenVerts);
 	VertexAttribPointer(LOC_TEXCOORD, 2, GL_FLOAT, GL_FALSE, 0, fix);
-	gl_DrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	pglDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
-	tex_downloaded = screentexture;
+	tex_downloaded = screenTextures[tex];
 }
 
 // Do screen fades!
@@ -1523,7 +1606,7 @@ static void DoWipe(boolean tinted, boolean isfadingin, boolean istowhite)
 	fix[6] = xfix;
 	fix[7] = 0.0f;
 
-	gl_Clear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+	pglClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 	SetBlend(PF_Modulated|PF_Translucent|PF_NoDepthTest);
 
 	Shader_Set(tinted ? SHADER_FADEMASK_ADDITIVEANDSUBTRACTIVE : SHADER_FADEMASK);
@@ -1544,37 +1627,88 @@ static void DoWipe(boolean tinted, boolean isfadingin, boolean istowhite)
 	Shader_SetUniforms(NULL, &white, NULL, NULL);
 	Shader_SetTransform();
 
-	gl_ActiveTexture(GL_TEXTURE0 + 0);
-	gl_BindTexture(GL_TEXTURE_2D, startScreenWipe);
-	gl_ActiveTexture(GL_TEXTURE0 + 1);
-	gl_BindTexture(GL_TEXTURE_2D, endScreenWipe);
-	gl_ActiveTexture(GL_TEXTURE0 + 2);
-	gl_BindTexture(GL_TEXTURE_2D, fademaskdownloaded);
+	pglActiveTexture(GL_TEXTURE0 + 0);
+	pglBindTexture(GL_TEXTURE_2D, startScreenWipe);
+	pglActiveTexture(GL_TEXTURE0 + 1);
+	pglBindTexture(GL_TEXTURE_2D, endScreenWipe);
+	pglActiveTexture(GL_TEXTURE0 + 2);
+	pglBindTexture(GL_TEXTURE_2D, fademaskdownloaded);
 
 	VertexAttribPointer(LOC_POSITION, 3, GL_FLOAT, GL_FALSE, 0, screenVerts);
 	VertexAttribPointer(LOC_TEXCOORD0, 2, GL_FLOAT, GL_FALSE, 0, fix);
 	VertexAttribPointer(LOC_TEXCOORD1, 2, GL_FLOAT, GL_FALSE, 0, defaultST);
 
-	gl_ActiveTexture(GL_TEXTURE0);
-	gl_DrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	pglActiveTexture(GL_TEXTURE0);
+	pglDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 	Shader_DisableVertexAttribArray(LOC_TEXCOORD1);
 
 	UnSetShader();
 	tex_downloaded = endScreenWipe;
 }
 
-static void DoScreenWipe(void)
+EXPORT void HWRAPI(DrawScreenTexture)(int tex, FSurfaceInfo *surf, FBITFIELD polyflags)
+{
+	// no way this will fucking work... bitten
+	float xfix, yfix;
+	INT32 texsize = 512;
+
+	const float screenVerts[12] =
+	{
+		-1.0f, -1.0f, 1.0f,
+		-1.0f, 1.0f, 1.0f,
+		1.0f, 1.0f, 1.0f,
+		1.0f, -1.0f, 1.0f
+	};
+
+	float fix[8];
+
+	// look for power of two that is large enough for the screen
+	while (texsize < screen_width || texsize < screen_height)
+		texsize <<= 1;
+
+	xfix = 1/((float)(texsize)/((float)((screen_width))));
+	yfix = 1/((float)(texsize)/((float)((screen_height))));
+
+	// const float screenVerts[12]
+
+	// float fix[8];
+	fix[0] = 0.0f;
+	fix[1] = 0.0f;
+	fix[2] = 0.0f;
+	fix[3] = yfix;
+	fix[4] = xfix;
+	fix[5] = yfix;
+	fix[6] = xfix;
+	fix[7] = 0.0f;
+
+	pglClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+
+	pglBindTexture(GL_TEXTURE_2D, screenTextures[tex]);
+	PreparePolygon(surf, NULL, surf ? polyflags : (PF_NoDepthTest));
+	if (!surf)
+		pglColor4ubv(white);
+
+	pglTexCoordPointer(2, GL_FLOAT, 0, fix);
+	pglVertexPointer(3, GL_FLOAT, 0, screenVerts);
+	pglDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+	tex_downloaded = screenTextures[tex];
+}
+
+
+//EXPORT void HWRAPI(DoScreenWipe)(void)
+EXPORT void HWRAPI(DoScreenWipe) (int wipeStart, int wipeEnd, FSurfaceInfo *surf, FBITFIELD polyFlags)
 {
 	DoWipe(false, false, false);
 }
 
-static void DoTintedWipe(boolean isfadingin, boolean istowhite)
+EXPORT void HWRAPI(DoTintedWipe)(boolean isfadingin, boolean istowhite)
 {
 	DoWipe(true, isfadingin, istowhite);
 }
 
 // Create a texture from the screen.
-static void MakeScreenTexture(void)
+EXPORT void HWRAPI(MakeScreenTexture) (int tex)
 {
 	INT32 texsize = 512;
 	boolean firstTime = (screentexture == 0);
@@ -1585,24 +1719,24 @@ static void MakeScreenTexture(void)
 
 	// Create screen texture
 	if (firstTime)
-		gl_GenTextures(1, &screentexture);
-	gl_BindTexture(GL_TEXTURE_2D, screentexture);
+		pglGenTextures(1, &screentexture);
+	pglBindTexture(GL_TEXTURE_2D, screentexture);
 
 	if (firstTime)
 	{
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 		SetClamp(GL_TEXTURE_WRAP_S);
 		SetClamp(GL_TEXTURE_WRAP_T);
-		gl_CopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 0, 0, texsize, texsize, 0);
+		pglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 0, 0, texsize, texsize, 0);
 	}
 	else
-		gl_CopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, texsize, texsize);
+		pglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, texsize, texsize);
 
 	tex_downloaded = screentexture;
 }
 
-static void MakeFinalScreenTexture(void)
+EXPORT void HWRAPI(MakeFinalScreenTexture) (void)
 {
 	INT32 texsize = 512;
 	boolean firstTime = (finalScreenTexture == 0);
@@ -1613,24 +1747,24 @@ static void MakeFinalScreenTexture(void)
 
 	// Create screen texture
 	if (firstTime)
-		gl_GenTextures(1, &finalScreenTexture);
-	gl_BindTexture(GL_TEXTURE_2D, finalScreenTexture);
+		pglGenTextures(1, &finalScreenTexture);
+	pglBindTexture(GL_TEXTURE_2D, finalScreenTexture);
 
 	if (firstTime)
 	{
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 		SetClamp(GL_TEXTURE_WRAP_S);
 		SetClamp(GL_TEXTURE_WRAP_T);
-		gl_CopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 0, 0, texsize, texsize, 0);
+		pglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 0, 0, texsize, texsize, 0);
 	}
 	else
-		gl_CopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, texsize, texsize);
+		pglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, texsize, texsize);
 
 	tex_downloaded = finalScreenTexture;
 }
 
-static void DrawFinalScreenTexture(int width, int height)
+EXPORT void HWRAPI(DrawFinalScreenTexture)(int width, int height)
 {
 	float xfix, yfix;
 	float origaspect, newaspect;
@@ -1688,27 +1822,106 @@ static void DrawFinalScreenTexture(int width, int height)
 	fix[6] = xfix;
 	fix[7] = 0.0f;
 
-	gl_Viewport(0, 0, width, height);
+	pglViewport(0, 0, width, height);
 
 	clearColour.red = clearColour.green = clearColour.blue = 0;
 	clearColour.alpha = 1;
 	ClearBuffer(true, false, &clearColour);
-	gl_BindTexture(GL_TEXTURE_2D, finalScreenTexture);
+	pglBindTexture(GL_TEXTURE_2D, finalScreenTexture);
 
 	Shader_SetUniforms(NULL, &white, NULL, NULL);
 
-	gl_BindBuffer(GL_ARRAY_BUFFER, 0);
+	pglBindBuffer(GL_ARRAY_BUFFER, 0);
 	VertexAttribPointer(LOC_POSITION, 3, GL_FLOAT, GL_FALSE, 0, off);
 	VertexAttribPointer(LOC_TEXCOORD, 2, GL_FLOAT, GL_FALSE, 0, fix);
-	gl_DrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	pglDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
 	tex_downloaded = finalScreenTexture;
 }
 
-struct hwdriver_s GPU_API_OpenGLES = {
-#define DEF(func) func,
-	HWR_API_FUNCTIONS(DEF)
-#undef DEF
-};
+EXPORT void HWRAPI(SetPaletteLookup)(UINT8 *lut)
+{
+	GLenum internalFormat;
+	if (gl_version[0] == '1' || gl_version[0] == '2')
+	{
+		// if the OpenGL version is below 3.0, then the GL_R8 format may not be available.
+		// so use GL_LUMINANCE8 instead to get a single component 8-bit format
+		// (it is possible to have access to shaders even in some OpenGL 1.x systems,
+		// so palette rendering can still possibly be achieved there)
+		internalFormat = GL_LUMINANCE8;
+	}
+	else
+	{
+		internalFormat = GL_R8;
+	}
+	if (!paletteLookupTex)
+		pglGenTextures(1, &paletteLookupTex);
+	pglActiveTexture(GL_TEXTURE1);
+	pglBindTexture(GL_TEXTURE_3D, paletteLookupTex);
+	pglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	pglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	pglTexImage3D(GL_TEXTURE_3D, 0, internalFormat, HWR_PALETTE_LUT_SIZE, HWR_PALETTE_LUT_SIZE, HWR_PALETTE_LUT_SIZE,
+		0, GL_RED, GL_UNSIGNED_BYTE, lut);
+	pglActiveTexture(GL_TEXTURE0);
+}
+
+EXPORT UINT32 HWRAPI(CreateLightTable)(RGBA_t *hw_lighttable)
+{
+	LTListItem *item = malloc(sizeof(LTListItem));
+	if (!LightTablesTail)
+	{
+		LightTablesHead = LightTablesTail = item;
+	}
+	else
+	{
+		LightTablesTail->next = item;
+		LightTablesTail = item;
+	}
+	item->next = NULL;
+	pglGenTextures(1, &item->id);
+	pglBindTexture(GL_TEXTURE_2D, item->id);
+	pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	pglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 32, 0, GL_RGBA, GL_UNSIGNED_BYTE, hw_lighttable);
+
+	// restore previously bound texture
+	pglBindTexture(GL_TEXTURE_2D, tex_downloaded);
+
+	return item->id;
+}
+
+// Delete light table textures, ids given before become invalid and must not be used.
+EXPORT void HWRAPI(ClearLightTables)(void)
+{
+	while (LightTablesHead)
+	{
+		LTListItem *item = LightTablesHead;
+		pglDeleteTextures(1, (GLuint *)&item->id);
+		LightTablesHead = item->next;
+		free(item);
+	}
+
+	LightTablesTail = NULL;
+
+	// we no longer have a bound light table (if we had one), we just deleted it!
+	lt_downloaded = 0;
+}
+
+// This palette is used for the palette rendering postprocessing step.
+EXPORT void HWRAPI(SetScreenPalette)(RGBA_t *palette)
+{
+	if (memcmp(screenPalette, palette, sizeof(screenPalette)))
+	{
+		memcpy(screenPalette, palette, sizeof(screenPalette));
+		if (!screenPaletteTex)
+			pglGenTextures(1, &screenPaletteTex);
+		pglActiveTexture(GL_TEXTURE2);
+		pglBindTexture(GL_TEXTURE_1D, screenPaletteTex);
+		pglTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		pglTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		pglTexImage1D(GL_TEXTURE_1D, 0, GL_RGBA, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, palette);
+		pglActiveTexture(GL_TEXTURE0);
+	}
+}
 
 #endif //HWRENDER
