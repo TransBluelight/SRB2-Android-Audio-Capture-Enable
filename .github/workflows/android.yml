@@ -1,10 +1,10 @@
-name: Android CI
+name: Android CI build now
 
 on:
   push:
-    branches: [ android-port ]
+    branches: [ android-port-experimenting ]
   pull_request:
-    branches: [ android-port ]
+    branches: [ android-port-experimenting ]
 
 jobs:
   build:
