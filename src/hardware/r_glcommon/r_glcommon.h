@@ -1,7 +1,7 @@
 // SONIC ROBO BLAST 2
 //-----------------------------------------------------------------------------
 // Copyright (C) 1998-2021 by Sonic Team Junior.
-// Copyright (C) 2020-2023 by SRB2 Mobile Project.
+// Copyright (C) 2020-2021 by Jaime Ita Passos.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -68,11 +68,11 @@ extern FILE *gllogstream;
 #endif
 
 #ifndef R_GL_APIENTRY
-#if defined(_WIN32)
-#define R_GL_APIENTRY APIENTRY
-#else
-#define R_GL_APIENTRY
-#endif
+	#if defined(_WIN32)
+		#define R_GL_APIENTRY APIENTRY
+	#else
+		#define R_GL_APIENTRY
+	#endif
 #endif
 
 // ==========================================================================
@@ -129,6 +129,8 @@ typedef void (R_GL_APIENTRY * PFNglClear) (GLbitfield mask);
 extern PFNglClear pglClear;
 typedef void (R_GL_APIENTRY * PFNglGetFloatv) (GLenum pname, GLfloat *params);
 extern PFNglGetFloatv pglGetFloatv;
+typedef void (R_GL_APIENTRY * PFNglPolygonMode) (GLenum, GLenum);
+extern PFNglPolygonMode pglPolygonMode;
 typedef void (R_GL_APIENTRY * PFNglGetIntegerv) (GLenum pname, GLint *params);
 extern PFNglGetIntegerv pglGetIntegerv;
 typedef const GLubyte * (R_GL_APIENTRY * PFNglGetString) (GLenum name);
@@ -171,10 +173,14 @@ extern PFNglReadPixels pglReadPixels;
 /* Texture mapping */
 typedef void (R_GL_APIENTRY * PFNglTexParameteri) (GLenum target, GLenum pname, GLint param);
 extern PFNglTexParameteri pglTexParameteri;
+typedef void (R_GL_APIENTRY * PFNglTexImage1D) (GLenum target, GLint level, GLint internalFormat, GLsizei width, GLint border, GLenum format, GLenum type, const GLvoid *pixels);
+extern PFNglTexImage1D pglTexImage1D;
 typedef void (R_GL_APIENTRY * PFNglTexImage2D) (GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels);
 extern PFNglTexImage2D pglTexImage2D;
 typedef void (R_GL_APIENTRY * PFNglTexSubImage2D) (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels);
 extern PFNglTexSubImage2D pglTexSubImage2D;
+typedef void (R_GL_APIENTRY * PFNglGetTexImage) (GLenum target, GLint level, GLenum format, GLenum type, GLvoid *pixels);
+extern PFNglGetTexImage pglGetTexImage;
 
 /* Drawing functions */
 typedef void (R_GL_APIENTRY * PFNglDrawArrays) (GLenum mode, GLint first, GLsizei count);
@@ -195,6 +201,8 @@ typedef void (R_GL_APIENTRY * PFNglCopyTexImage2D) (GLenum target, GLint level, 
 extern PFNglCopyTexImage2D pglCopyTexImage2D;
 typedef void (R_GL_APIENTRY * PFNglCopyTexSubImage2D) (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height);
 extern PFNglCopyTexSubImage2D pglCopyTexSubImage2D;
+typedef void (R_GL_APIENTRY * PFNglTexImage3D) (GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const GLvoid *pixels);
+extern PFNglTexImage3D pglTexImage3D;
 #endif
 
 //
@@ -362,7 +370,6 @@ extern PFNglDeleteBuffers pglDeleteBuffers;
 typedef void (R_GL_APIENTRY * PFNglBlendEquation) (GLenum mode);
 extern PFNglBlendEquation pglBlendEquation;
 
-#ifdef HAVE_GL_FRAMEBUFFER
 /* 3.0 functions for framebuffers and renderbuffers */
 typedef void (R_GL_APIENTRY * PFNglGenFramebuffers) (GLsizei n, GLuint *ids);
 extern PFNglGenFramebuffers pglGenFramebuffers;
@@ -384,144 +391,11 @@ typedef void (R_GL_APIENTRY * PFNglRenderbufferStorage) (GLenum target, GLenum i
 extern PFNglRenderbufferStorage pglRenderbufferStorage;
 typedef void (R_GL_APIENTRY * PFNglFramebufferRenderbuffer) (GLenum target, GLenum attachment, GLenum renderbuffertarget, GLenum renderbuffer);
 extern PFNglFramebufferRenderbuffer pglFramebufferRenderbuffer;
-#endif
-
-void gl_Clear(GLbitfield mask);
-void gl_GetFloatv(GLenum pname, GLfloat *params);
-void gl_GetIntegerv(GLenum pname, GLint *params);
-const GLubyte *gl_GetString(GLenum name);
-void gl_ClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha);
-void gl_ColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha);
-void gl_AlphaFunc(GLenum func, GLclampf ref);
-void gl_BlendFunc(GLenum sfactor, GLenum dfactor);
-void gl_CullFace(GLenum mode);
-void gl_PolygonOffset(GLfloat factor, GLfloat units);
-void gl_Enable(GLenum cap);
-void gl_Disable(GLenum cap);
-
-/* Depth buffer */
-void gl_DepthFunc(GLenum func);
-void gl_DepthMask(GLboolean flag);
-
-/* Transformation */
-void gl_Viewport(GLint x, GLint y, GLsizei width, GLsizei height);
-
-/* Raster functions */
-void gl_PixelStorei(GLenum pname, GLint param);
-void gl_ReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels);
-
-/* Texture mapping */
-void gl_TexParameteri(GLenum target, GLenum pname, GLint param);
-void gl_TexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels);
-void gl_TexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels);
-
-/* Drawing functions */
-void gl_DrawArrays(GLenum mode, GLint first, GLsizei count);
-void gl_DrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices);
-
-/* Texture objects */
-void gl_GenTextures(GLsizei n, const GLuint *textures);
-void gl_DeleteTextures(GLsizei n, const GLuint *textures);
-void gl_BindTexture(GLenum target, GLuint texture);
-
-/* Texture mapping */
-void gl_CopyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border);
-void gl_CopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height);
-
-//
-// Multitexturing
-//
-
-void gl_ActiveTexture(GLenum texture);
-void gl_ClientActiveTexture(GLenum texture);
-
-//
-// Mipmapping
-//
-
-#ifdef HAVE_GLES
-void gl_GenerateMipmap(GLenum target);
-#endif
-
-//
-// Depth functions
-//
-
-#ifndef HAVE_GLES
-void gl_ClearDepth(GLclampd depth);
-void gl_DepthRange(GLclampd near_val, GLclampd far_val);
-#else
-void gl_ClearDepthf(GLclampf depth);
-void gl_DepthRangef(GLclampf near_val, GLclampf far_val);
-#endif
-
-//
-// Legacy functions
-//
-
-#ifndef HAVE_GLES2
-void gl_MatrixMode(GLenum mode);
-void gl_PushMatrix(void);
-void gl_PopMatrix(void);
-void gl_LoadIdentity(void);
-void gl_MultMatrixf(const GLfloat *m);
-void gl_Rotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z);
-void gl_Scalef(GLfloat x, GLfloat y, GLfloat z);
-void gl_Translatef(GLfloat x, GLfloat y, GLfloat z);
-
-/* Drawing Functions */
-void gl_VertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
-void gl_NormalPointer(GLenum type, GLsizei stride, const GLvoid *pointer);
-void gl_TexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
-void gl_ColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
-void gl_EnableClientState(GLenum cap);
-void gl_DisableClientState(GLenum cap);
-
-/* Lighting */
-void gl_ShadeModel(GLenum mode);
-void gl_Lightfv(GLenum light, GLenum pname, GLfloat *params);
-void gl_LightModelfv(GLenum pname, GLfloat *params);
-void gl_Materialfv(GLint face, GLenum pname, GLfloat *params);
-
-/* Texture mapping */
-void gl_TexEnvi(GLenum target, GLenum pname, GLint param);
-#endif // HAVE_GLES2
-
-// Color
-#ifdef HAVE_GLES
-void gl_Color4f(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
-#else
-void gl_Color4ubv(const GLubyte *v);
-#endif
-
-/* 1.5 functions for buffers */
-void gl_GenBuffers(GLsizei n, GLuint *buffers);
-void gl_BindBuffer(GLenum target, GLuint buffer);
-void gl_BufferData(GLenum target, GLsizei size, const GLvoid *data, GLenum usage);
-void gl_DeleteBuffers(GLsizei n, const GLuint *buffers);
-
-/* 2.0 functions */
-void gl_BlendEquation(GLenum mode);
-
-#ifdef HAVE_GL_FRAMEBUFFER
-/* 3.0 functions for framebuffers and renderbuffers */
-void gl_GenFramebuffers(GLsizei n, GLuint *ids);
-void gl_BindFramebuffer(GLenum target, GLuint framebuffer);
-void gl_DeleteFramebuffers(GLsizei n, GLuint *ids);
-void gl_FramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
-GLenum gl_CheckFramebufferStatus(GLenum target);
-void gl_GenRenderbuffers(GLsizei n, GLuint *renderbuffers);
-void gl_BindRenderbuffer(GLenum target, GLuint renderbuffer);
-void gl_DeleteRenderbuffers(GLsizei n, GLuint *renderbuffers);
-void gl_RenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height);
-void gl_FramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLenum renderbuffer);
-#endif
 
 // ==========================================================================
 //                                                                  FUNCTIONS
 // ==========================================================================
 
-#ifdef HAVE_GL_FRAMEBUFFER
 void GLFramebuffer_Generate(void);
 void GLFramebuffer_Delete(void);
 
@@ -532,17 +406,14 @@ void GLFramebuffer_Enable(void);
 void GLFramebuffer_Disable(void);
 
 void GLFramebuffer_SetDepth(INT32 depth);
-#endif
 
 void GLModel_GenerateVBOs(model_t *model);
 void GLModel_ClearVBOs(model_t *model);
-void GLModel_DeleteVBOs(model_t *model);
 
 void GLModel_AllocLerpBuffer(size_t size);
 void GLModel_AllocLerpTinyBuffer(size_t size);
 
 void  GLTexture_AllocBuffer(GLMipmap_t *pTexInfo);
-void  GLTexture_Disable(void);
 void  GLTexture_Flush(void);
 void  GLTexture_FlushScreen(void);
 void  GLTexture_SetFilterMode(INT32 mode);
@@ -551,12 +422,6 @@ INT32 GLTexture_GetMemoryUsage(FTextureInfo *head);
 boolean GLBackend_Init(void);
 boolean GLBackend_InitContext(void);
 void    GLBackend_RecreateContext(void);
-void    GLBackend_DeleteModelData(void);
-void    GLBackend_SetPalette(RGBA_t *palette);
-
-void    GLBackend_CheckError(const char *func, const char *file, int line);
-
-#define CHECK_GL_ERROR(file) GLBackend_CheckError(__FUNCTION__, file, __LINE__ - 1)
 
 boolean GLBackend_LoadFunctions(void);
 boolean GLBackend_LoadExtraFunctions(void);
@@ -584,21 +449,28 @@ INT32 GLBackend_InvertAlphaTestShader(INT32 type);
 void GLBackend_ReadRect(INT32 x, INT32 y, INT32 width, INT32 height, INT32 dst_stride, UINT16 *dst_data);
 void GLBackend_ReadRectRGBA(INT32 x, INT32 y, INT32 width, INT32 height, UINT32 *dst_data);
 
-void GLBackend_SetSurface(INT32 w, INT32 h);
-void GLBackend_SetBlend(FBITFIELD PolyFlags);
-
 void    GLExtension_Init(void);
 boolean GLExtension_Available(const char *extension);
 boolean GLExtension_LoadFunctions(void);
+
+void SetSurface(INT32 w, INT32 h);
+void SetModelView(GLint w, GLint h);
+void SetStates(void);
+void SetBlendingStates(FBITFIELD PolyFlags);
+void SetNoTexture(void);
+void SetClamp(GLenum pname);
 
 // ==========================================================================
 //                                                                  CONSTANTS
 // ==========================================================================
 
+extern GLuint NOTEXTURE_NUM;
+
 #define N_PI_DEMI               (M_PIl/2.0f)
 #define ASPECT_RATIO            (1.0f)
 
 #define FAR_CLIPPING_PLANE      32768.0f // Draw further! Tails 01-21-2001
+extern float NEAR_CLIPPING_PLANE;
 
 #define NULL_VBO_VERTEX ((gl_skyvertex_t*)NULL)
 #define sky_vbo_x (GLExtension_vertex_buffer_object ? &NULL_VBO_VERTEX->x : &sky->data[0].x)
@@ -623,6 +495,9 @@ boolean GLExtension_LoadFunctions(void);
 #endif
 #ifndef GL_TEXTURE1
 #define GL_TEXTURE1 0x84C1
+#endif
+#ifndef GL_TEXTURE2
+#define GL_TEXTURE2 0x84C2
 #endif
 
 /* 1.5 Parms */
@@ -692,6 +567,14 @@ struct GLRGBAFloat
 };
 typedef struct GLRGBAFloat GLRGBAFloat;
 
+// lighttable list item
+struct LTListItem
+{
+	UINT32 id;
+	struct LTListItem *next;
+};
+typedef struct LTListItem LTListItem;
+
 struct FExtensionList
 {
 	const char *name;
@@ -728,8 +611,6 @@ extern float alpha_threshold;
 
 extern boolean model_lighting;
 
-extern float near_clipping_plane;
-
 extern FTextureInfo *TexCacheTail;
 extern FTextureInfo *TexCacheHead;
 
@@ -737,19 +618,18 @@ extern GLuint    tex_downloaded;
 extern GLfloat   fov;
 extern FBITFIELD CurrentPolyFlags;
 
+extern GLuint screenTextures[NUMSCREENTEXTURES];
 extern GLuint screentexture;
 extern GLuint startScreenWipe;
 extern GLuint endScreenWipe;
 extern GLuint finalScreenTexture;
 
-#ifdef HAVE_GL_FRAMEBUFFER
 extern GLuint FramebufferObject, FramebufferTexture;
 extern GLuint RenderbufferObject, RenderbufferDepthBits;
 extern GLboolean FramebufferEnabled, RenderToFramebuffer;
 
 #define NumRenderbufferFormats 5
 extern GLenum RenderbufferFormats[NumRenderbufferFormats];
-#endif
 
 extern float *vertBuffer;
 extern float *normBuffer;
@@ -775,9 +655,7 @@ extern boolean GLExtension_vertex_buffer_object;
 extern boolean GLExtension_texture_filter_anisotropic;
 extern boolean GLExtension_vertex_program;
 extern boolean GLExtension_fragment_program;
-#ifdef HAVE_GL_FRAMEBUFFER
 extern boolean GLExtension_framebuffer_object;
-#endif
 extern boolean GLExtension_shaders;
 
 #endif // _R_GLCOMMON_H_

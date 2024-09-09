@@ -1,7 +1,7 @@
 // SONIC ROBO BLAST 2
 //-----------------------------------------------------------------------------
 // Copyright (C) 1998-2021 by Sonic Team Junior.
-// Copyright (C) 2020-2023 by SRB2 Mobile Project.
+// Copyright (C) 2020-2021 by Jaime Ita Passos.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -19,6 +19,7 @@
 
 #ifdef GL_SHADERS
 #include "../shaders/gl_shaders.h"
+#include "../hw_shaders.h"
 #endif
 
 #include <stdarg.h>
@@ -28,13 +29,28 @@ const GLubyte *gl_renderer = NULL;
 const GLubyte *gl_extensions = NULL;
 
 // ==========================================================================
+//                                                                  CONSTANTS
+// ==========================================================================
+
+GLuint NOTEXTURE_NUM = 0;
+float NEAR_CLIPPING_PLANE = NZCLIP_PLANE;
+
+// ==========================================================================
 //                                                                    GLOBALS
 // ==========================================================================
 
 RGBA_t *TextureBuffer = NULL;
 static size_t TextureBufferSize = 0;
 
-RGBA_t  myPaletteData[256];
+// Linked list of all lighttables.
+static LTListItem *LightTablesTail = NULL;
+static LTListItem *LightTablesHead = NULL;
+
+static RGBA_t screenPalette[256] = {0}; // the palette for the postprocessing step in palette rendering
+static GLuint screenPaletteTex = 0; // 1D texture containing the screen palette
+static GLuint paletteLookupTex = 0; // 3D texture containing RGB -> palette index lookup table
+RGBA_t  myPaletteData[256]; // the palette for converting textures to RGBA
+
 GLint   screen_width    = 0;
 GLint   screen_height   = 0;
 GLbyte  screen_depth    = 0;
@@ -50,24 +66,25 @@ GLint anisotropic_filter = 0;
 boolean alpha_test = false;
 float alpha_threshold = 0.0f;
 
-float near_clipping_plane = NZCLIP_PLANE;
-
 // Linked list of all textures.
 FTextureInfo *TexCacheTail = NULL;
 FTextureInfo *TexCacheHead = NULL;
 
 GLuint      tex_downloaded  = 0;
+static GLuint lt_downloaded = 0; // currently bound lighttable texture
 GLfloat     fov             = 90.0f;
 FBITFIELD   CurrentPolyFlags;
 
+// Sryder:	NextTexAvail is broken for these because palette changes or changes to the texture filter or antialiasing
+//			flush all of the stored textures, leaving them unavailable at times such as between levels
+//			These need to start at 0 and be set to their number, and be reset to 0 when deleted so that intel GPUs
+//			can know when the textures aren't there, as textures are always considered resident in their virtual memory
+GLuint screenTextures[NUMSCREENTEXTURES] = {0};
 GLuint screentexture = 0;
 GLuint startScreenWipe = 0;
 GLuint endScreenWipe = 0;
 GLuint finalScreenTexture = 0;
 
-static GLuint blank_texture_num = 0;
-
-#ifdef HAVE_GL_FRAMEBUFFER
 GLuint FramebufferObject, FramebufferTexture;
 GLuint RenderbufferObject, RenderbufferDepthBits;
 GLboolean FramebufferEnabled = GL_FALSE, RenderToFramebuffer = GL_FALSE;
@@ -82,7 +99,6 @@ GLenum RenderbufferFormats[NumRenderbufferFormats] =
 	GL_DEPTH_COMPONENT32,
 	GL_DEPTH_COMPONENT32F
 };
-#endif
 
 // Linked list of all models.
 static GLModelList *ModelListTail = NULL;
@@ -99,30 +115,22 @@ boolean GLExtension_vertex_buffer_object;
 boolean GLExtension_texture_filter_anisotropic;
 boolean GLExtension_vertex_program;
 boolean GLExtension_fragment_program;
-#ifdef HAVE_GL_FRAMEBUFFER
 boolean GLExtension_framebuffer_object;
-#endif
 boolean GLExtension_shaders; // Not an extension on its own, but it is set if multiple extensions are available.
 
 static FExtensionList const ExtensionList[] = {
 	{"GL_ARB_multitexture", &GLExtension_multitexture},
 
-#ifndef HAVE_GLES2
 	{"GL_ARB_vertex_buffer_object", &GLExtension_vertex_buffer_object},
-#endif
 
 	{"GL_ARB_texture_filter_anisotropic", &GLExtension_texture_filter_anisotropic},
 	{"GL_EXT_texture_filter_anisotropic", &GLExtension_texture_filter_anisotropic},
 
-#ifndef HAVE_GLES2
 	{"GL_ARB_vertex_program", &GLExtension_vertex_program},
 	{"GL_ARB_fragment_program", &GLExtension_fragment_program},
-#endif
 
-#ifdef HAVE_GL_FRAMEBUFFER
 	{"GL_ARB_framebuffer_object", &GLExtension_framebuffer_object},
 	{"GL_OES_framebuffer_object", &GLExtension_framebuffer_object},
-#endif
 
 	{NULL, NULL}
 };
@@ -137,6 +145,7 @@ static void PrintExtensions(const GLubyte *extensions);
 /* Miscellaneous */
 PFNglClear pglClear;
 PFNglGetFloatv pglGetFloatv;
+PFNglPolygonMode pglPolygonMode;
 PFNglGetIntegerv pglGetIntegerv;
 PFNglGetString pglGetString;
 PFNglGetError pglGetError;
@@ -162,8 +171,10 @@ PFNglReadPixels pglReadPixels;
 
 /* Texture mapping */
 PFNglTexParameteri pglTexParameteri;
+PFNglTexImage1D pglTexImage1D;
 PFNglTexImage2D pglTexImage2D;
 PFNglTexSubImage2D pglTexSubImage2D;
+PFNglGetTexImage pglGetTexImage;
 
 /* Drawing functions */
 PFNglDrawArrays pglDrawArrays;
@@ -177,6 +188,7 @@ PFNglBindTexture pglBindTexture;
 /* Texture mapping */
 PFNglCopyTexImage2D pglCopyTexImage2D;
 PFNglCopyTexSubImage2D pglCopyTexSubImage2D;
+PFNglTexImage3D pglTexImage3D;
 #endif
 
 //
@@ -260,7 +272,6 @@ PFNglDeleteBuffers pglDeleteBuffers;
 /* 2.0 functions */
 PFNglBlendEquation pglBlendEquation;
 
-#ifdef HAVE_GL_FRAMEBUFFER
 /* 3.0 functions for framebuffers and renderbuffers */
 PFNglGenFramebuffers pglGenFramebuffers;
 PFNglBindFramebuffer pglBindFramebuffer;
@@ -272,722 +283,6 @@ PFNglBindRenderbuffer pglBindRenderbuffer;
 PFNglDeleteRenderbuffers pglDeleteRenderbuffers;
 PFNglRenderbufferStorage pglRenderbufferStorage;
 PFNglFramebufferRenderbuffer pglFramebufferRenderbuffer;
-#endif
-
-static const char *GetGLError(GLenum error)
-{
-	if (error == GL_NO_ERROR)
-		return "GL_NO_ERROR";
-
-	switch (error)
-	{
-		case GL_INVALID_ENUM:                  return "GL_INVALID_ENUM";
-		case GL_INVALID_VALUE:                 return "GL_INVALID_VALUE";
-		case GL_INVALID_OPERATION:             return "GL_INVALID_OPERATION";
-		case GL_OUT_OF_MEMORY:                 return "GL_OUT_OF_MEMORY";
-#ifdef HAVE_GL_FRAMEBUFFER
-		case GL_INVALID_FRAMEBUFFER_OPERATION: return "GL_INVALID_FRAMEBUFFER_OPERATION";
-#endif
-		default:                               return "unknown error";
-	}
-}
-
-struct GLError
-{
-	char *func;
-	char *file;
-	int line;
-	GLenum error;
-};
-
-static struct GLError *gl_past_errors_list = NULL;
-static size_t gl_past_errors_list_size = 0;
-
-static boolean FindPastError(const char *func, const char *file, int line, GLenum error)
-{
-	size_t i = 0;
-
-	if (gl_past_errors_list)
-	{
-		for (; i < gl_past_errors_list_size; i++)
-		{
-			if (!gl_past_errors_list[i].func || !gl_past_errors_list[i].file)
-				break;
-			if (strcmp(gl_past_errors_list[i].func, func))
-				break;
-			if (strcmp(gl_past_errors_list[i].file, file))
-				break;
-			if (gl_past_errors_list[i].line != line)
-				break;
-			if (gl_past_errors_list[i].error != error)
-				break;
-			return true;
-		}
-	}
-
-	gl_past_errors_list_size++;
-	gl_past_errors_list = realloc(gl_past_errors_list, sizeof(struct GLError) * gl_past_errors_list_size);
-
-	if (!gl_past_errors_list)
-	{
-		i = 0;
-		gl_past_errors_list_size = 1;
-		gl_past_errors_list = malloc(sizeof(struct GLError));
-		if (!gl_past_errors_list)
-			return false;
-	}
-
-	struct GLError *err = &gl_past_errors_list[i];
-	err->func = malloc(strlen(func) + 1);
-	err->file = malloc(strlen(file) + 1);
-	err->line = line;
-	err->error = error;
-
-	if (err->func)
-		memcpy(err->func, func, strlen(func) + 1);
-	if (err->file)
-		memcpy(err->file, file, strlen(file) + 1);
-
-	return false;
-}
-
-void GLBackend_CheckError(const char *func, const char *file, int line)
-{
-	GLenum error = pglGetError();
-	while (error != GL_NO_ERROR)
-	{
-		if (!FindPastError(func, file, line, error))
-			GL_DBG_Printf("%s (%s, line %d): %s\n", func, file, line, GetGLError(error));
-		error = pglGetError();
-	}
-}
-
-#define CHECK_GL() CHECK_GL_ERROR("r_glcommon.c")
-
-void gl_Clear(GLbitfield mask)
-{
-	if (pglClear)
-	{
-		pglClear(mask);
-		CHECK_GL();
-	}
-}
-void gl_GetFloatv(GLenum pname, GLfloat *params)
-{
-	if (pglGetFloatv)
-	{
-		pglGetFloatv(pname, params);
-		CHECK_GL();
-	}
-}
-void gl_GetIntegerv(GLenum pname, GLint *params)
-{
-	if (pglGetIntegerv)
-	{
-		pglGetIntegerv(pname, params);
-		CHECK_GL();
-	}
-}
-const GLubyte *gl_GetString(GLenum name)
-{
-	const GLubyte *result = NULL;
-	if (pglGetString)
-	{
-		result = pglGetString(name);
-		CHECK_GL();
-	}
-	return result;
-}
-void gl_ClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha)
-{
-	if (pglClearColor)
-	{
-		pglClearColor(red, green, blue, alpha);
-		CHECK_GL();
-	}
-}
-void gl_ColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha)
-{
-	if (pglColorMask)
-	{
-		pglColorMask(red, green, blue, alpha);
-		CHECK_GL();
-	}
-}
-void gl_AlphaFunc(GLenum func, GLclampf ref)
-{
-	if (pglAlphaFunc)
-	{
-		pglAlphaFunc(func, ref);
-		CHECK_GL();
-	}
-}
-void gl_BlendFunc(GLenum sfactor, GLenum dfactor)
-{
-	if (pglBlendFunc)
-	{
-		pglBlendFunc(sfactor, dfactor);
-		CHECK_GL();
-	}
-}
-void gl_CullFace(GLenum mode)
-{
-	if (pglCullFace)
-	{
-		pglCullFace(mode);
-		CHECK_GL();
-	}
-}
-void gl_PolygonOffset(GLfloat factor, GLfloat units)
-{
-	if (pglPolygonOffset)
-	{
-		pglPolygonOffset(factor, units);
-		CHECK_GL();
-	}
-}
-void gl_Enable(GLenum cap)
-{
-	if (pglEnable)
-	{
-		pglEnable(cap);
-		CHECK_GL();
-	}
-}
-void gl_Disable(GLenum cap)
-{
-	if (pglDisable)
-	{
-		pglDisable(cap);
-		CHECK_GL();
-	}
-}
-
-/* Depth buffer */
-void gl_DepthFunc(GLenum func)
-{
-	if (pglDepthFunc)
-	{
-		pglDepthFunc(func);
-		CHECK_GL();
-	}
-}
-void gl_DepthMask(GLboolean flag)
-{
-	if (pglDepthMask)
-	{
-		pglDepthMask(flag);
-		CHECK_GL();
-	}
-}
-
-/* Transformation */
-void gl_Viewport(GLint x, GLint y, GLsizei width, GLsizei height)
-{
-	if (pglViewport)
-	{
-		pglViewport(x, y, width, height);
-		CHECK_GL();
-	}
-}
-
-/* Raster functions */
-void gl_PixelStorei(GLenum pname, GLint param)
-{
-	if (pglPixelStorei)
-	{
-		pglPixelStorei(pname, param);
-		CHECK_GL();
-	}
-}
-void gl_ReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels)
-{
-	if (pglReadPixels)
-	{
-		pglReadPixels(x, y, width, height, format, type, pixels);
-		CHECK_GL();
-	}
-}
-
-/* Texture mapping */
-void gl_TexParameteri(GLenum target, GLenum pname, GLint param)
-{
-	if (pglTexParameteri)
-	{
-		pglTexParameteri(target, pname, param);
-		CHECK_GL();
-	}
-}
-void gl_TexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels)
-{
-	if (pglTexImage2D)
-	{
-		pglTexImage2D(target, level, internalFormat, width, height, border, format, type, pixels);
-		CHECK_GL();
-	}
-}
-void gl_TexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels)
-{
-	if (pglTexSubImage2D)
-	{
-		pglTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels);
-		CHECK_GL();
-	}
-}
-
-/* Drawing functions */
-void gl_DrawArrays(GLenum mode, GLint first, GLsizei count)
-{
-	if (pglDrawArrays)
-	{
-		pglDrawArrays(mode, first, count);
-		CHECK_GL();
-	}
-}
-void gl_DrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
-{
-	if (pglDrawElements)
-	{
-		pglDrawElements(mode, count, type, indices);
-		CHECK_GL();
-	}
-}
-
-/* Texture objects */
-void gl_GenTextures(GLsizei n, const GLuint *textures)
-{
-	if (pglGenTextures)
-	{
-		pglGenTextures(n, textures);
-		CHECK_GL();
-	}
-}
-void gl_DeleteTextures(GLsizei n, const GLuint *textures)
-{
-	if (pglDeleteTextures)
-	{
-		pglDeleteTextures(n, textures);
-		CHECK_GL();
-	}
-}
-void gl_BindTexture(GLenum target, GLuint texture)
-{
-	if (pglBindTexture)
-	{
-		pglBindTexture(target, texture);
-		CHECK_GL();
-	}
-}
-
-/* Texture mapping */
-void gl_CopyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border)
-{
-	if (pglCopyTexImage2D)
-	{
-		pglCopyTexImage2D(target, level, internalformat, x, y, width, height, border);
-		CHECK_GL();
-	}
-}
-void gl_CopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)
-{
-	if (pglCopyTexSubImage2D)
-	{
-		pglCopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height);
-		CHECK_GL();
-	}
-}
-
-//
-// Multitexturing
-//
-
-void gl_ActiveTexture(GLenum texture)
-{
-	if (pglActiveTexture)
-	{
-		pglActiveTexture(texture);
-		CHECK_GL();
-	}
-}
-void gl_ClientActiveTexture(GLenum texture)
-{
-	if (pglClientActiveTexture)
-	{
-		pglClientActiveTexture(texture);
-		CHECK_GL();
-	}
-}
-
-//
-// Mipmapping
-//
-
-#ifdef HAVE_GLES
-void gl_GenerateMipmap(GLenum target)
-{
-	if (pglGenerateMipmap)
-	{
-		pglGenerateMipmap(target);
-		CHECK_GL();
-	}
-}
-#endif
-
-//
-// Depth functions
-//
-
-#ifndef HAVE_GLES
-void gl_ClearDepth(GLclampd depth)
-{
-	if (pglClearDepth)
-	{
-		pglClearDepth(depth);
-		CHECK_GL();
-	}
-}
-void gl_DepthRange(GLclampd near_val, GLclampd far_val)
-{
-	if (pglDepthRange)
-	{
-		pglDepthRange(near_val, far_val);
-		CHECK_GL();
-	}
-}
-#else
-void gl_ClearDepthf(GLclampf depth)
-{
-	if (pglClearDepthf)
-	{
-		pglClearDepthf(depth);
-		CHECK_GL();
-	}
-}
-void gl_DepthRangef(GLclampf near_val, GLclampf far_val)
-{
-	if (pglDepthRangef)
-	{
-		pglDepthRangef(near_val, far_val);
-		CHECK_GL();
-	}
-}
-#endif
-
-//
-// Legacy functions
-//
-
-#ifndef HAVE_GLES2
-void gl_MatrixMode(GLenum mode)
-{
-	if (pglMatrixMode)
-	{
-		pglMatrixMode(mode);
-		CHECK_GL();
-	}
-}
-void gl_PushMatrix(void)
-{
-	if (pglPushMatrix)
-	{
-		pglPushMatrix();
-		CHECK_GL();
-	}
-}
-void gl_PopMatrix(void)
-{
-	if (pglPopMatrix)
-	{
-		pglPopMatrix();
-		CHECK_GL();
-	}
-}
-void gl_LoadIdentity(void)
-{
-	if (pglLoadIdentity)
-	{
-		pglLoadIdentity();
-		CHECK_GL();
-	}
-}
-void gl_MultMatrixf(const GLfloat *m)
-{
-	if (pglMultMatrixf)
-	{
-		pglMultMatrixf(m);
-		CHECK_GL();
-	}
-}
-void gl_Rotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z)
-{
-	if (pglRotatef)
-	{
-		pglRotatef(angle, x, y, z);
-		CHECK_GL();
-	}
-}
-void gl_Scalef(GLfloat x, GLfloat y, GLfloat z)
-{
-	if (pglScalef)
-	{
-		pglScalef(x, y, z);
-		CHECK_GL();
-	}
-}
-void gl_Translatef(GLfloat x, GLfloat y, GLfloat z)
-{
-	if (pglTranslatef)
-	{
-		pglTranslatef(x, y, z);
-		CHECK_GL();
-	}
-}
-
-/* Drawing Functions */
-void gl_VertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer)
-{
-	if (pglVertexPointer)
-	{
-		pglVertexPointer(size, type, stride, pointer);
-		CHECK_GL();
-	}
-}
-void gl_NormalPointer(GLenum type, GLsizei stride, const GLvoid *pointer)
-{
-	if (pglNormalPointer)
-	{
-		pglNormalPointer(type, stride, pointer);
-		CHECK_GL();
-	}
-}
-void gl_TexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer)
-{
-	if (pglTexCoordPointer)
-	{
-		pglTexCoordPointer(size, type, stride, pointer);
-		CHECK_GL();
-	}
-}
-void gl_ColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer)
-{
-	if (pglColorPointer)
-	{
-		pglColorPointer(size, type, stride, pointer);
-		CHECK_GL();
-	}
-}
-void gl_EnableClientState(GLenum cap)
-{
-	if (pglEnableClientState)
-	{
-		pglEnableClientState(cap);
-		CHECK_GL();
-	}
-}
-void gl_DisableClientState(GLenum cap)
-{
-	if (pglDisableClientState)
-	{
-		pglDisableClientState(cap);
-		CHECK_GL();
-	}
-}
-
-/* Lighting */
-void gl_ShadeModel(GLenum mode)
-{
-	if (pglShadeModel)
-	{
-		pglShadeModel(mode);
-		CHECK_GL();
-	}
-}
-void gl_Lightfv(GLenum light, GLenum pname, GLfloat *params)
-{
-	if (pglLightfv)
-	{
-		pglLightfv(light, pname, params);
-		CHECK_GL();
-	}
-}
-void gl_LightModelfv(GLenum pname, GLfloat *params)
-{
-	if (pglLightModelfv)
-	{
-		pglLightModelfv(pname, params);
-		CHECK_GL();
-	}
-}
-void gl_Materialfv(GLint face, GLenum pname, GLfloat *params)
-{
-	if (pglMaterialfv)
-	{
-		pglMaterialfv(face, pname, params);
-		CHECK_GL();
-	}
-}
-
-/* Texture mapping */
-void gl_TexEnvi(GLenum target, GLenum pname, GLint param)
-{
-	if (pglTexEnvi)
-	{
-		pglTexEnvi(target, pname, param);
-		CHECK_GL();
-	}
-}
-#endif // HAVE_GLES2
-
-// Color
-#ifdef HAVE_GLES
-void gl_Color4f(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)
-{
-	if (pglColor4f)
-	{
-		pglColor4f(red, green, blue, alpha);
-		CHECK_GL();
-	}
-}
-#else
-void gl_Color4ubv(const GLubyte *v)
-{
-	if (pglColor4ubv)
-	{
-		pglColor4ubv(v);
-		CHECK_GL();
-	}
-}
-#endif
-
-/* 1.5 functions for buffers */
-void gl_GenBuffers(GLsizei n, GLuint *buffers)
-{
-	if (pglGenBuffers)
-	{
-		pglGenBuffers(n, buffers);
-		CHECK_GL();
-	}
-}
-void gl_BindBuffer(GLenum target, GLuint buffer)
-{
-	if (pglBindBuffer)
-	{
-		pglBindBuffer(target, buffer);
-		CHECK_GL();
-	}
-}
-void gl_BufferData(GLenum target, GLsizei size, const GLvoid *data, GLenum usage)
-{
-	if (pglBufferData)
-	{
-		pglBufferData(target, size, data, usage);
-		CHECK_GL();
-	}
-}
-void gl_DeleteBuffers(GLsizei n, const GLuint *buffers)
-{
-	if (pglDeleteBuffers)
-	{
-		pglDeleteBuffers(n, buffers);
-		CHECK_GL();
-	}
-}
-
-/* 2.0 functions */
-void gl_BlendEquation(GLenum mode)
-{
-	if (pglBlendEquation)
-	{
-		pglBlendEquation(mode);
-		CHECK_GL();
-	}
-}
-
-#ifdef HAVE_GL_FRAMEBUFFER
-/* 3.0 functions for framebuffers and renderbuffers */
-void gl_GenFramebuffers(GLsizei n, GLuint *ids)
-{
-	if (pglGenFramebuffers)
-	{
-		pglGenFramebuffers(n, ids);
-		CHECK_GL();
-	}
-}
-void gl_BindFramebuffer(GLenum target, GLuint framebuffer)
-{
-	if (pglBindFramebuffer)
-	{
-		pglBindFramebuffer(target, framebuffer);
-		CHECK_GL();
-	}
-}
-void gl_DeleteFramebuffers(GLsizei n, GLuint *ids)
-{
-	if (pglDeleteFramebuffers)
-	{
-		pglDeleteFramebuffers(n, ids);
-		CHECK_GL();
-	}
-}
-void gl_FramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level)
-{
-	if (pglFramebufferTexture2D)
-	{
-		pglFramebufferTexture2D(target, attachment, textarget, texture, level);
-		CHECK_GL();
-	}
-}
-GLenum gl_CheckFramebufferStatus(GLenum target)
-{
-	GLenum result = 0;
-	if (pglCheckFramebufferStatus)
-	{
-		result = pglCheckFramebufferStatus(target);
-		CHECK_GL();
-	}
-	return result;
-}
-void gl_GenRenderbuffers(GLsizei n, GLuint *renderbuffers)
-{
-	if (pglGenRenderbuffers)
-	{
-		pglGenRenderbuffers(n, renderbuffers);
-		CHECK_GL();
-	}
-}
-void gl_BindRenderbuffer(GLenum target, GLuint renderbuffer)
-{
-	if (pglBindRenderbuffer)
-	{
-		pglBindRenderbuffer(target, renderbuffer);
-		CHECK_GL();
-	}
-}
-void gl_DeleteRenderbuffers(GLsizei n, GLuint *renderbuffers)
-{
-	if (pglDeleteRenderbuffers)
-	{
-		pglDeleteRenderbuffers(n, renderbuffers);
-		CHECK_GL();
-	}
-}
-void gl_RenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height)
-{
-	if (pglRenderbufferStorage)
-	{
-		pglRenderbufferStorage(target, internalformat, width, height);
-		CHECK_GL();
-	}
-}
-void gl_FramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLenum renderbuffer)
-{
-	if (pglFramebufferRenderbuffer)
-	{
-		pglFramebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer);
-		CHECK_GL();
-	}
-}
-#endif
 
 boolean GLBackend_LoadCommonFunctions(void)
 {
@@ -1004,6 +299,7 @@ boolean GLBackend_LoadCommonFunctions(void)
 	GETOPENGLFUNC(GetFloatv)
 	GETOPENGLFUNC(GetIntegerv)
 	GETOPENGLFUNC(GetString)
+	//GETOPENGLFUNC(PolygonMode)
 	GETOPENGLFUNC(GetError)
 
 	GETOPENGLFUNC(DepthFunc)
@@ -1018,8 +314,10 @@ boolean GLBackend_LoadCommonFunctions(void)
 	GETOPENGLFUNC(ReadPixels)
 
 	GETOPENGLFUNC(TexParameteri)
+	GETOPENGLFUNC(TexImage1D)
 	GETOPENGLFUNC(TexImage2D)
 	GETOPENGLFUNC(TexSubImage2D)
+	GETOPENGLFUNC(GetTexImage)
 
 	GETOPENGLFUNC(GenTextures)
 	GETOPENGLFUNC(DeleteTextures)
@@ -1057,9 +355,35 @@ boolean GLBackend_LoadLegacyFunctions(void)
 //                                                                  FUNCTIONS
 // ==========================================================================
 
+static const char *GetGLError(GLenum error)
+{
+	if (error == GL_NO_ERROR)
+		return "GL_NO_ERROR";
+
+	switch (error)
+	{
+		case GL_INVALID_ENUM:                  return "GL_INVALID_ENUM";
+		case GL_INVALID_VALUE:                 return "GL_INVALID_VALUE";
+		case GL_INVALID_OPERATION:             return "GL_INVALID_OPERATION";
+		case GL_OUT_OF_MEMORY:                 return "GL_OUT_OF_MEMORY";
+		case GL_INVALID_FRAMEBUFFER_OPERATION: return "GL_INVALID_FRAMEBUFFER_OPERATION";
+		default:                               return "unknown error";
+	}
+}
+
+#if 0
+static void CheckGLError(const char *from)
+{
+	GLenum error = pglGetError();
+	if (error != GL_NO_ERROR)
+		GL_DBG_Printf("%s: %s\n", from, GetGLError(error));
+}
+#endif
+
 static void SetBlendEquation(GLenum mode)
 {
-	gl_BlendEquation(mode);
+	if (pglBlendEquation)
+		pglBlendEquation(mode);
 }
 
 static void SetBlendMode(FBITFIELD flags)
@@ -1068,32 +392,32 @@ static void SetBlendMode(FBITFIELD flags)
 	switch (flags)
 	{
 		case PF_Translucent & PF_Blending:
-			gl_BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // alpha = level of transparency
+			pglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // alpha = level of transparency
 			break;
 		case PF_Masked & PF_Blending:
 			// Hurdler: does that mean lighting is only made by alpha src?
 			// it sounds ok, but not for polygonsmooth
-			gl_BlendFunc(GL_SRC_ALPHA, GL_ZERO);                // 0 alpha = holes in texture
+			pglBlendFunc(GL_SRC_ALPHA, GL_ZERO);                // 0 alpha = holes in texture
 			break;
 		case PF_Additive & PF_Blending:
 		case PF_Subtractive & PF_Blending:
 		case PF_ReverseSubtract & PF_Blending:
-			gl_BlendFunc(GL_SRC_ALPHA, GL_ONE); // src * alpha + dest
+			pglBlendFunc(GL_SRC_ALPHA, GL_ONE); // src * alpha + dest
 			break;
 		case PF_Environment & PF_Blending:
-			gl_BlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+			pglBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 			break;
 		case PF_Multiplicative & PF_Blending:
-			gl_BlendFunc(GL_DST_COLOR, GL_ZERO);
+			pglBlendFunc(GL_DST_COLOR, GL_ZERO);
 			break;
 		case PF_Fog & PF_Fog:
 			// Sryder: Fog
 			// multiplies input colour by input alpha, and destination colour by input colour, then adds them
-			gl_BlendFunc(GL_SRC_ALPHA, GL_SRC_COLOR);
+			pglBlendFunc(GL_SRC_ALPHA, GL_SRC_COLOR);
 			break;
 		default: // must be 0, otherwise it's an error
 			// No blending
-			gl_BlendFunc(GL_ONE, GL_ZERO);   // the same as no blending
+			pglBlendFunc(GL_ONE, GL_ZERO);   // the same as no blending
 			break;
 	}
 
@@ -1123,7 +447,7 @@ static void SetBlendMode(FBITFIELD flags)
 	{
 		case PF_Masked & PF_Blending:
 #ifndef HAVE_GLES2
-			gl_AlphaFunc(GL_GREATER, 0.5f);
+			pglAlphaFunc(GL_GREATER, 0.5f);
 #endif
 			break;
 		case PF_Translucent & PF_Blending:
@@ -1135,19 +459,19 @@ static void SetBlendMode(FBITFIELD flags)
 #ifdef HAVE_GLES2
 			alpha_threshold = 0.0f;
 #else
-			gl_AlphaFunc(GL_NOTEQUAL, 0.0f);
+			pglAlphaFunc(GL_NOTEQUAL, 0.0f);
 #endif
 			break;
 		case PF_Fog & PF_Fog:
 #ifdef HAVE_GLES2
 			alpha_test = false;
 #else
-			gl_AlphaFunc(GL_ALWAYS, 0.0f); // Don't discard zero alpha fragments
+			pglAlphaFunc(GL_ALWAYS, 0.0f); // Don't discard zero alpha fragments
 #endif
 			break;
 		default:
 #ifndef HAVE_GLES2
-			gl_AlphaFunc(GL_GREATER, 0.5f);
+			pglAlphaFunc(GL_GREATER, 0.5f);
 #endif
 			break;
 	}
@@ -1156,7 +480,7 @@ static void SetBlendMode(FBITFIELD flags)
 // PF_Masked - we could use an ALPHA_TEST of GL_EQUAL, and alpha ref of 0,
 //             is it faster when pixels are discarded ?
 
-void GLBackend_SetBlend(FBITFIELD PolyFlags)
+void SetBlendingStates(FBITFIELD PolyFlags)
 {
 	FBITFIELD Xor = CurrentPolyFlags^PolyFlags;
 
@@ -1169,44 +493,44 @@ void GLBackend_SetBlend(FBITFIELD PolyFlags)
 		if (Xor & PF_NoAlphaTest)
 		{
 			if (PolyFlags & PF_NoAlphaTest)
-				gl_Disable(GL_ALPHA_TEST);
+				pglDisable(GL_ALPHA_TEST);
 			else
-				gl_Enable(GL_ALPHA_TEST);      // discard 0 alpha pixels (holes in texture)
+				pglEnable(GL_ALPHA_TEST);      // discard 0 alpha pixels (holes in texture)
 		}
 #endif
 
 		if (Xor & PF_Decal)
 		{
 			if (PolyFlags & PF_Decal)
-				gl_Enable(GL_POLYGON_OFFSET_FILL);
+				pglEnable(GL_POLYGON_OFFSET_FILL);
 			else
-				gl_Disable(GL_POLYGON_OFFSET_FILL);
+				pglDisable(GL_POLYGON_OFFSET_FILL);
 		}
 
 		if (Xor & PF_NoDepthTest)
 		{
 			if (PolyFlags & PF_NoDepthTest)
-				gl_DepthFunc(GL_ALWAYS);
+				pglDepthFunc(GL_ALWAYS);
 			else
-				gl_DepthFunc(GL_LEQUAL);
+				pglDepthFunc(GL_LEQUAL);
 		}
 
 		if (Xor & PF_RemoveYWrap)
 		{
 			if (PolyFlags & PF_RemoveYWrap)
-				GPU->SetClamp(GL_TEXTURE_WRAP_T);
+				SetClamp(GL_TEXTURE_WRAP_T);
 		}
 
 		if (Xor & PF_ForceWrapX)
 		{
 			if (PolyFlags & PF_ForceWrapX)
-				gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+				pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
 		}
 
 		if (Xor & PF_ForceWrapY)
 		{
 			if (PolyFlags & PF_ForceWrapY)
-				gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+				pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 		}
 
 #ifndef HAVE_GLES2
@@ -1214,11 +538,11 @@ void GLBackend_SetBlend(FBITFIELD PolyFlags)
 		{
 			if (PolyFlags & PF_Modulated)
 			{   // mix texture colour with Surface->PolyColor
-				gl_TexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+				pglTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 			}
 			else
 			{   // colour from texture is unchanged before blending
-				gl_TexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+				pglTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 			}
 		}
 #endif
@@ -1227,26 +551,28 @@ void GLBackend_SetBlend(FBITFIELD PolyFlags)
 		{
 			if (PolyFlags&PF_Occlude)
 			{
-				gl_DepthMask(1);
+				pglDepthMask(1);
 			}
 			else
-				gl_DepthMask(0);
+				pglDepthMask(0);
 		}
 		////Hurdler: not used if we don't define POLYSKY
 		if (Xor & PF_Invisible)
 		{
 			if (PolyFlags&PF_Invisible)
-				gl_BlendFunc(GL_ZERO, GL_ONE);         // transparent blending
+				pglBlendFunc(GL_ZERO, GL_ONE);         // transparent blending
 			else
 			{   // big hack: (TODO: manage that better)
 				// we test only for PF_Masked because PF_Invisible is only used
 				// (for now) with it (yeah, that's crappy, sorry)
 				if ((PolyFlags&PF_Blending)==PF_Masked)
-					gl_BlendFunc(GL_SRC_ALPHA, GL_ZERO);
+					pglBlendFunc(GL_SRC_ALPHA, GL_ZERO);
 			}
 		}
 		if (PolyFlags & PF_NoTexture)
-			GPU->SetNoTexture();
+		{
+			SetNoTexture();
+		}
 	}
 
 	CurrentPolyFlags = PolyFlags;
@@ -1257,12 +583,11 @@ INT32 GLBackend_GetAlphaTestShader(INT32 type)
 #ifdef HAVE_GLES2
 	switch (type)
 	{
-		case SHADER_DEFAULT: return SHADER_ALPHA_TEST;
+		case SHADER_NONE: return SHADER_ALPHA_TEST;
 		case SHADER_FLOOR: return SHADER_FLOOR_ALPHA_TEST;
 		case SHADER_WALL: return SHADER_WALL_ALPHA_TEST;
 		case SHADER_SPRITE: return SHADER_SPRITE_ALPHA_TEST;
 		case SHADER_MODEL: return SHADER_MODEL_ALPHA_TEST;
-		case SHADER_MODEL_LIGHTING: return SHADER_MODEL_LIGHTING_ALPHA_TEST;
 		case SHADER_WATER: return SHADER_WATER_ALPHA_TEST;
 		default: break;
 	}
@@ -1276,12 +601,11 @@ INT32 GLBackend_InvertAlphaTestShader(INT32 type)
 #ifdef HAVE_GLES2
 	switch (type)
 	{
-		case SHADER_ALPHA_TEST: return SHADER_DEFAULT;
+		case SHADER_ALPHA_TEST: return SHADER_NONE;
 		case SHADER_FLOOR_ALPHA_TEST: return SHADER_FLOOR;
 		case SHADER_WALL_ALPHA_TEST: return SHADER_WALL;
 		case SHADER_SPRITE_ALPHA_TEST: return SHADER_SPRITE;
 		case SHADER_MODEL_ALPHA_TEST: return SHADER_MODEL;
-		case SHADER_MODEL_LIGHTING_ALPHA_TEST: return SHADER_MODEL_LIGHTING;
 		case SHADER_WATER_ALPHA_TEST: return SHADER_WATER;
 		default: break;
 	}
@@ -1292,13 +616,6 @@ INT32 GLBackend_InvertAlphaTestShader(INT32 type)
 
 INT32 GLBackend_GetShaderType(INT32 type)
 {
-#ifdef GL_SHADERS
-	// If using model lighting, set the appropriate shader.
-	// However don't override a custom shader.
-	if (type == SHADER_MODEL && model_lighting
-	&& !(gl_shaders[SHADER_MODEL].custom && !gl_shaders[SHADER_MODEL_LIGHTING].custom))
-		type = SHADER_MODEL_LIGHTING;
-#endif
 
 #ifdef HAVE_GLES2
 	if (!alpha_test)
@@ -1306,12 +623,11 @@ INT32 GLBackend_GetShaderType(INT32 type)
 
 	switch (type)
 	{
-		case SHADER_DEFAULT:
+		case SHADER_NONE:
 		case SHADER_FLOOR:
 		case SHADER_WALL:
 		case SHADER_SPRITE:
 		case SHADER_MODEL:
-		case SHADER_MODEL_LIGHTING:
 		case SHADER_WATER:
 		{
 			INT32 newshader = GLBackend_GetAlphaTestShader(type);
@@ -1326,30 +642,31 @@ INT32 GLBackend_GetShaderType(INT32 type)
 	return type;
 }
 
-void GLBackend_SetSurface(INT32 w, INT32 h)
+void SetSurface(INT32 w, INT32 h)
 {
-	GPU->SetModelView(w, h);
-	GPU->SetStates();
+	SetModelView(w, h);
+	SetStates();
 
-	gl_Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	pglClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
-
-static boolean version_checked = false;
 
 boolean GLBackend_InitContext(void)
 {
 	if (!GLBackend_LoadCommonFunctions())
 		return false;
 
-	if (!version_checked)
+	if (gl_version == NULL || gl_renderer == NULL)
 	{
-		gl_version = gl_GetString(GL_VERSION);
-		gl_renderer = gl_GetString(GL_RENDERER);
+		gl_version = pglGetString(GL_VERSION);
+		gl_renderer = pglGetString(GL_RENDERER);
 
-		GL_DBG_Printf("OpenGL version: %s\n", gl_version);
+#if defined(__ANDROID__)
+		I_OutputMsg("OpenGL version: %s\n", gl_version);
+		I_OutputMsg("GPU: %s\n", gl_renderer);
+#else
+		GL_DBG_Printf("OpenGL %s\n", gl_version);
 		GL_DBG_Printf("GPU: %s\n", gl_renderer);
 
-#if !defined(__ANDROID__)
 		if (strcmp((const char*)gl_renderer, "GDI Generic") == 0 &&
 			strcmp((const char*)gl_version, "1.1.0") == 0)
 		{
@@ -1359,35 +676,15 @@ boolean GLBackend_InitContext(void)
 			// Also set the renderer variable back to software so the next launch won't
 			// repeat this error.
 			CV_StealthSet(&cv_renderer, "Software");
-			I_Error("OpenGL Error: Failed to access the GPU. Possible reasons include:\n"
-					"- GPU vendor has dropped OpenGL support on your GPU and OS. (Old GPU?)\n"
-					"- GPU drivers are missing or broken. You may need to update your drivers.");
+			I_Error("OpenGL Error: Failed to access the GPU. There may be an issue with your graphics drivers.");
 		}
 #endif
-
-		version_checked = true;
 	}
 
 	if (gl_extensions == NULL)
 		GLExtension_Init();
 
 	return true;
-}
-
-void GLBackend_DeleteModelData(void)
-{
-	while (ModelListHead)
-	{
-		GLModelList *pModel = ModelListHead;
-
-		if (pModel->model && pModel->model->meshes)
-			GLModel_DeleteVBOs(pModel->model);
-
-		ModelListHead = pModel->next;
-		free(pModel);
-	}
-
-	ModelListTail = ModelListHead = NULL;
 }
 
 void GLBackend_RecreateContext(void)
@@ -1398,10 +695,7 @@ void GLBackend_RecreateContext(void)
 		GLMipmap_t *texture = pTexInfo->texture;
 
 		if (pTexInfo->downloaded)
-		{
-			gl_DeleteTextures(1, (GLuint *)&pTexInfo->downloaded);
 			pTexInfo->downloaded = 0;
-		}
 
 		if (texture)
 			texture->downloaded = 0;
@@ -1413,21 +707,17 @@ void GLBackend_RecreateContext(void)
 	TexCacheTail = TexCacheHead = NULL;
 
 	GLTexture_FlushScreen();
-	gl_DeleteTextures(1, &blank_texture_num);
-	blank_texture_num = 0;
 	tex_downloaded = 0;
 
-#ifdef HAVE_GL_FRAMEBUFFER
 	if (GLExtension_framebuffer_object)
 	{
 		// Unbind the framebuffer and renderbuffer
-		gl_BindFramebuffer(GL_FRAMEBUFFER, 0);
-		gl_BindRenderbuffer(GL_RENDERBUFFER, 0);
+		pglBindFramebuffer(GL_FRAMEBUFFER, 0);
+		pglBindRenderbuffer(GL_RENDERBUFFER, 0);
 
 		FramebufferObject = FramebufferTexture = 0;
 		RenderbufferObject = 0;
 	}
-#endif
 
 	while (ModelListHead)
 	{
@@ -1446,18 +736,6 @@ void GLBackend_RecreateContext(void)
 	Shader_CleanPrograms();
 	Shader_Compile();
 #endif
-}
-
-void GLBackend_SetPalette(RGBA_t *palette)
-{
-	size_t palsize = sizeof(RGBA_t) * 256;
-
-	// on a palette change, you have to reload all of the textures
-	if (memcmp(&myPaletteData, palette, palsize))
-	{
-		memcpy(&myPaletteData, palette, palsize);
-		GLTexture_Flush();
-	}
 }
 
 static size_t lerpBufferSize = 0;
@@ -1562,14 +840,14 @@ static void CreateModelVBO(mesh_t *mesh, mdlframe_t *frame)
 		bufPtr++;
 	}
 
-	gl_GenBuffers(1, &frame->vboID);
-	gl_BindBuffer(GL_ARRAY_BUFFER, frame->vboID);
-	gl_BufferData(GL_ARRAY_BUFFER, bufferSize, buffer, GL_STATIC_DRAW);
+	pglGenBuffers(1, &frame->vboID);
+	pglBindBuffer(GL_ARRAY_BUFFER, frame->vboID);
+	pglBufferData(GL_ARRAY_BUFFER, bufferSize, buffer, GL_STATIC_DRAW);
 	free(buffer);
 
 	// Don't leave the array buffer bound to the model,
 	// since this is called mid-frame
-	gl_BindBuffer(GL_ARRAY_BUFFER, 0);
+	pglBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 static void CreateModelVBOTiny(mesh_t *mesh, tinyframe_t *frame)
@@ -1607,14 +885,14 @@ static void CreateModelVBOTiny(mesh_t *mesh, tinyframe_t *frame)
 		bufPtr++;
 	}
 
-	gl_GenBuffers(1, &frame->vboID);
-	gl_BindBuffer(GL_ARRAY_BUFFER, frame->vboID);
+	pglGenBuffers(1, &frame->vboID);
+	pglBindBuffer(GL_ARRAY_BUFFER, frame->vboID);
 	pglBufferData(GL_ARRAY_BUFFER, bufferSize, buffer, GL_STATIC_DRAW);
 	free(buffer);
 
 	// Don't leave the array buffer bound to the model,
 	// since this is called mid-frame
-	gl_BindBuffer(GL_ARRAY_BUFFER, 0);
+	pglBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 void GLModel_GenerateVBOs(model_t *model)
@@ -1631,7 +909,7 @@ void GLModel_GenerateVBOs(model_t *model)
 			{
 				mdlframe_t *frame = &mesh->frames[j];
 				if (frame->vboID)
-					gl_DeleteBuffers(1, &frame->vboID);
+					pglDeleteBuffers(1, &frame->vboID);
 				frame->vboID = 0;
 				CreateModelVBO(mesh, frame);
 			}
@@ -1642,7 +920,7 @@ void GLModel_GenerateVBOs(model_t *model)
 			{
 				tinyframe_t *frame = &mesh->tinyframes[j];
 				if (frame->vboID)
-					gl_DeleteBuffers(1, &frame->vboID);
+					pglDeleteBuffers(1, &frame->vboID);
 				frame->vboID = 0;
 				CreateModelVBOTiny(mesh, frame);
 			}
@@ -1665,9 +943,6 @@ void GLModel_ClearVBOs(model_t *model)
 {
 	int i, j;
 
-	if (!model->hasVBOs)
-		return;
-
 	for (i = 0; i < model->numMeshes; i++)
 	{
 		mesh_t *mesh = &model->meshes[i];
@@ -1685,42 +960,6 @@ void GLModel_ClearVBOs(model_t *model)
 			for (j = 0; j < model->meshes[i].numFrames; j++)
 			{
 				tinyframe_t *frame = &mesh->tinyframes[j];
-				frame->vboID = 0;
-			}
-		}
-	}
-
-	model->hasVBOs = false;
-}
-
-void GLModel_DeleteVBOs(model_t *model)
-{
-	int i, j;
-
-	if (!model->hasVBOs)
-		return;
-
-	for (i = 0; i < model->numMeshes; i++)
-	{
-		mesh_t *mesh = &model->meshes[i];
-
-		if (mesh->frames)
-		{
-			for (j = 0; j < model->meshes[i].numFrames; j++)
-			{
-				mdlframe_t *frame = &mesh->frames[j];
-				if (frame->vboID)
-					gl_DeleteBuffers(1, &frame->vboID);
-				frame->vboID = 0;
-			}
-		}
-		else if (mesh->tinyframes)
-		{
-			for (j = 0; j < model->meshes[i].numFrames; j++)
-			{
-				tinyframe_t *frame = &mesh->tinyframes[j];
-				if (frame->vboID)
-					gl_DeleteBuffers(1, &frame->vboID);
 				frame->vboID = 0;
 			}
 		}
@@ -1741,31 +980,14 @@ void GLTexture_AllocBuffer(GLMipmap_t *pTexInfo)
 	}
 }
 
-void GLTexture_Disable(void)
-{
-	if (tex_downloaded == blank_texture_num)
-		return;
-
-	if (blank_texture_num == 0)
-	{
-		// Generate a 1x1 white pixel as the blank texture
-		UINT8 whitepixel[4] = {255, 255, 255, 255};
-		gl_GenTextures(1, &blank_texture_num);
-		gl_BindTexture(GL_TEXTURE_2D, blank_texture_num);
-		gl_TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, whitepixel);
-	}
-	else
-		gl_BindTexture(GL_TEXTURE_2D, blank_texture_num);
-
-	tex_downloaded = blank_texture_num;
-}
-
 // -----------------+
 // Flush            : Flush OpenGL textures
 //                  : Clear list of downloaded mipmaps
 // -----------------+
 void GLTexture_Flush(void)
 {
+	//GL_DBG_Printf ("GLTexture_Flush()\n");
+
 	while (TexCacheHead)
 	{
 		FTextureInfo *pTexInfo = TexCacheHead;
@@ -1773,7 +995,7 @@ void GLTexture_Flush(void)
 
 		if (pTexInfo->downloaded)
 		{
-			gl_DeleteTextures(1, (GLuint *)&pTexInfo->downloaded);
+			pglDeleteTextures(1, (GLuint *)&pTexInfo->downloaded);
 			pTexInfo->downloaded = 0;
 		}
 
@@ -1797,19 +1019,20 @@ void GLTexture_Flush(void)
 //			a new size
 void GLTexture_FlushScreen(void)
 {
+#if 0 // keeping this temperally - bitten
 	if (screentexture)
-		gl_DeleteTextures(1, &screentexture);
+		pglDeleteTextures(1, &screentexture);
 	if (startScreenWipe)
-		gl_DeleteTextures(1, &startScreenWipe);
+		pglDeleteTextures(1, &startScreenWipe);
 	if (endScreenWipe)
-		gl_DeleteTextures(1, &endScreenWipe);
+		pglDeleteTextures(1, &endScreenWipe);
 	if (finalScreenTexture)
-		gl_DeleteTextures(1, &finalScreenTexture);
-
-	screentexture = 0;
-	startScreenWipe = 0;
-	endScreenWipe = 0;
-	finalScreenTexture = 0;
+		pglDeleteTextures(1, &finalScreenTexture);
+#endif
+	int i;
+	pglDeleteTextures(NUMSCREENTEXTURES, screenTextures);
+	for (i = 0; i < NUMSCREENTEXTURES; i++)
+		screenTextures[i] = 0;
 }
 
 
@@ -1890,7 +1113,6 @@ INT32 GLTexture_GetMemoryUsage(FTextureInfo *head)
 	return res;
 }
 
-#ifdef HAVE_GL_FRAMEBUFFER
 void GLFramebuffer_Generate(void)
 {
 	if (!GLExtension_framebuffer_object)
@@ -1898,9 +1120,9 @@ void GLFramebuffer_Generate(void)
 
 	// Generate the framebuffer
 	if (FramebufferObject == 0)
-		gl_GenFramebuffers(1, &FramebufferObject);
+		pglGenFramebuffers(1, &FramebufferObject);
 
-	if (gl_CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+	if (pglCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
 		GLFramebuffer_GenerateAttachments();
 }
 
@@ -1910,11 +1132,11 @@ void GLFramebuffer_Delete(void)
 		return;
 
 	// Unbind the framebuffer and renderbuffer
-	gl_BindFramebuffer(GL_FRAMEBUFFER, 0);
-	gl_BindRenderbuffer(GL_RENDERBUFFER, 0);
+	pglBindFramebuffer(GL_FRAMEBUFFER, 0);
+	pglBindRenderbuffer(GL_RENDERBUFFER, 0);
 
 	if (FramebufferObject)
-		gl_DeleteFramebuffers(1, &FramebufferObject);
+		pglDeleteFramebuffers(1, &FramebufferObject);
 
 	GLFramebuffer_DeleteAttachments();
 	FramebufferObject = 0;
@@ -1935,7 +1157,7 @@ static boolean CheckRenderbuffer(void)
 	{
 		while (error != GL_NO_ERROR)
 		{
-			gl_RenderbufferStorage(GL_RENDERBUFFER, RenderbufferFormats[i++], screen_width, screen_height);
+			pglRenderbufferStorage(GL_RENDERBUFFER, RenderbufferFormats[i++], screen_width, screen_height);
 			error = pglGetError();
 
 			if (i == NumRenderbufferFormats)
@@ -1953,7 +1175,7 @@ static boolean CheckRenderbuffer(void)
 
 		while (error != GL_NO_ERROR)
 		{
-			gl_RenderbufferStorage(GL_RENDERBUFFER, RenderbufferFormats[i--], screen_width, screen_height);
+			pglRenderbufferStorage(GL_RENDERBUFFER, RenderbufferFormats[i--], screen_width, screen_height);
 			error = pglGetError();
 
 			if (i < 0)
@@ -1970,46 +1192,46 @@ void GLFramebuffer_GenerateAttachments(void)
 		return;
 
 	// Bind the framebuffer
-	gl_BindFramebuffer(GL_FRAMEBUFFER, FramebufferObject);
+	pglBindFramebuffer(GL_FRAMEBUFFER, FramebufferObject);
 
 	// Generate the framebuffer texture
 	if (FramebufferTexture == 0)
 	{
-		gl_GenTextures(1, &FramebufferTexture);
-		gl_BindTexture(GL_TEXTURE_2D, FramebufferTexture);
-		gl_TexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screen_width, screen_height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		gl_BindTexture(GL_TEXTURE_2D, 0);
+		pglGenTextures(1, &FramebufferTexture);
+		pglBindTexture(GL_TEXTURE_2D, FramebufferTexture);
+		pglTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screen_width, screen_height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		pglBindTexture(GL_TEXTURE_2D, 0);
 
 		// Attach the framebuffer texture to the framebuffer
-		gl_FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, FramebufferTexture, 0);
+		pglFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, FramebufferTexture, 0);
 	}
 
 	// Generate the renderbuffer
 	if (RenderbufferObject == 0)
 	{
-		gl_GenRenderbuffers(1, &RenderbufferObject);
+		pglGenRenderbuffers(1, &RenderbufferObject);
 
-		gl_BindRenderbuffer(GL_RENDERBUFFER, RenderbufferObject);
-		gl_RenderbufferStorage(GL_RENDERBUFFER, RenderbufferFormats[RenderbufferDepthBits], screen_width, screen_height);
+		pglBindRenderbuffer(GL_RENDERBUFFER, RenderbufferObject);
+		pglRenderbufferStorage(GL_RENDERBUFFER, RenderbufferFormats[RenderbufferDepthBits], screen_width, screen_height);
 
 		if (CheckRenderbuffer())
 		{
 			// Attach the renderbuffer to the framebuffer
-			gl_FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, RenderbufferObject);
+			pglFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, RenderbufferObject);
 
 			// Clear the renderbuffer
-			GPU->ClearBuffer(true, true, NULL);
+			HWD.pfnClearBuffer(true, true, NULL);
 		}
 		else
 			RenderToFramebuffer = GL_FALSE;
 
-		gl_BindRenderbuffer(GL_RENDERBUFFER, 0);
+		pglBindRenderbuffer(GL_RENDERBUFFER, 0);
 	}
 
 	// Unbind the framebuffer
-	gl_BindFramebuffer(GL_FRAMEBUFFER, 0);
+	pglBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void GLFramebuffer_DeleteAttachments(void)
@@ -2018,14 +1240,14 @@ void GLFramebuffer_DeleteAttachments(void)
 		return;
 
 	// Unbind the framebuffer and renderbuffer
-	gl_BindFramebuffer(GL_FRAMEBUFFER, 0);
-	gl_BindRenderbuffer(GL_RENDERBUFFER, 0);
+	pglBindFramebuffer(GL_FRAMEBUFFER, 0);
+	pglBindRenderbuffer(GL_RENDERBUFFER, 0);
 
 	if (FramebufferTexture)
-		gl_DeleteTextures(1, &FramebufferTexture);
+		pglDeleteTextures(1, &FramebufferTexture);
 
 	if (RenderbufferObject)
-		gl_DeleteRenderbuffers(1, &RenderbufferObject);
+		pglDeleteRenderbuffers(1, &RenderbufferObject);
 
 	FramebufferTexture = 0;
 	RenderbufferObject = 0;
@@ -2039,7 +1261,7 @@ void GLFramebuffer_Enable(void)
 	if (RenderbufferDepthBits != LastRenderbufferDepthBits)
 	{
 		if (RenderbufferObject)
-			gl_DeleteRenderbuffers(1, &RenderbufferObject);
+			pglDeleteRenderbuffers(1, &RenderbufferObject);
 
 		RenderbufferObject = 0;
 		LastRenderbufferDepthBits = RenderbufferDepthBits;
@@ -2053,8 +1275,8 @@ void GLFramebuffer_Enable(void)
 	if (RenderToFramebuffer == GL_FALSE)
 		return;
 
-	gl_BindFramebuffer(GL_FRAMEBUFFER, FramebufferObject);
-	gl_BindRenderbuffer(GL_RENDERBUFFER, RenderbufferObject);
+	pglBindFramebuffer(GL_FRAMEBUFFER, FramebufferObject);
+	pglBindRenderbuffer(GL_RENDERBUFFER, RenderbufferObject);
 }
 
 void GLFramebuffer_Disable(void)
@@ -2062,15 +1284,14 @@ void GLFramebuffer_Disable(void)
 	if (!GLExtension_framebuffer_object)
 		return;
 
-	gl_BindFramebuffer(GL_FRAMEBUFFER, 0);
-	gl_BindRenderbuffer(GL_RENDERBUFFER, 0);
+	pglBindFramebuffer(GL_FRAMEBUFFER, 0);
+	pglBindRenderbuffer(GL_RENDERBUFFER, 0);
 }
 
 void GLFramebuffer_SetDepth(INT32 depth)
 {
 	RenderbufferDepthBits = min(max(depth, 0), NumRenderbufferFormats-1);
 }
-#endif
 
 void GLBackend_ReadRect(INT32 x, INT32 y, INT32 width, INT32 height, INT32 dst_stride, UINT16 *dst_data)
 {
@@ -2084,9 +1305,9 @@ void GLBackend_ReadRect(INT32 x, INT32 y, INT32 width, INT32 height, INT32 dst_s
 		if (!row)
 			return;
 
-		gl_PixelStorei(GL_PACK_ALIGNMENT, 1);
-		gl_ReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE, dst_data);
-		gl_PixelStorei(GL_UNPACK_ALIGNMENT, 1);
+		pglPixelStorei(GL_PACK_ALIGNMENT, 1);
+		pglReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE, dst_data);
+		pglPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
 		for (i = 0; i < height/2; i++)
 		{
@@ -2105,9 +1326,9 @@ void GLBackend_ReadRect(INT32 x, INT32 y, INT32 width, INT32 height, INT32 dst_s
 		if (!image)
 			return;
 
-		gl_PixelStorei(GL_PACK_ALIGNMENT, 1);
-		gl_ReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE, image);
-		gl_PixelStorei(GL_UNPACK_ALIGNMENT, 1);
+		pglPixelStorei(GL_PACK_ALIGNMENT, 1);
+		pglReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE, image);
+		pglPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
 		for (i = height-1; i >= 0; i--)
 		{
@@ -2134,9 +1355,9 @@ void GLBackend_ReadRectRGBA(INT32 x, INT32 y, INT32 width, INT32 height, UINT32 
 	if (!src_data)
 		return;
 
-	gl_PixelStorei(GL_PACK_ALIGNMENT, 1);
-	gl_ReadPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, (GLubyte *)src_data);
-	gl_PixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	pglPixelStorei(GL_PACK_ALIGNMENT, 1);
+	pglReadPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, (GLubyte *)src_data);
+	pglPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
 	for (i = height-1; i >= 0; i--)
 		memcpy(&dst_data[i * width], &src_data[(height-i-1) * width], row_width);
@@ -2148,16 +1369,10 @@ void GLExtension_Init(void)
 {
 	INT32 i = 0;
 
-	gl_extensions = gl_GetString(GL_EXTENSIONS);
+	gl_extensions = pglGetString(GL_EXTENSIONS);
 
 	GL_DBG_Printf("Extensions: ");
 	PrintExtensions(gl_extensions);
-
-#ifdef HAVE_GLES2
-	GLExtension_vertex_buffer_object = true;
-	GLExtension_vertex_program = true;
-	GLExtension_fragment_program = true;
-#endif
 
 	while (ExtensionList[i].name)
 	{
@@ -2186,7 +1401,7 @@ void GLExtension_Init(void)
 
 	if (GLExtension_texture_filter_anisotropic)
 	{
-		gl_GetIntegerv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maximumAnisotropy);
+		pglGetIntegerv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maximumAnisotropy);
 
 		if (!maximumAnisotropy)
 		{
@@ -2196,14 +1411,12 @@ void GLExtension_Init(void)
 	}
 	else
 		maximumAnisotropy = 1;
-
-	glanisotropicmode_cons_t[1].value = maximumAnisotropy;
 }
 
 boolean GLExtension_Available(const char *extension)
 {
 #ifdef HAVE_SDL
-	return SDL_GL_ExtensionSupported(extension) == SDL_TRUE ? true : false;
+	return (SDL_GL_ExtensionSupported(extension) == SDL_TRUE ? true : false);
 #else
 	const GLubyte *start = gl_extensions;
 	GLubyte       *where, *terminator;
@@ -2263,6 +1476,7 @@ boolean GLExtension_LoadFunctions(void)
 	{
 		const char *list[] =
 		{
+			"TexImage3D",
 			"ActiveTexture",
 #ifndef HAVE_GLES2
 			"ClientActiveTexture",
@@ -2272,6 +1486,7 @@ boolean GLExtension_LoadFunctions(void)
 
 		if (CheckFunctionList(list))
 		{
+			GETOPENGLFUNC(TexImage3D)
 			GETOPENGLFUNC(ActiveTexture)
 #ifndef HAVE_GLES2
 			GETOPENGLFUNC(ClientActiveTexture)
@@ -2303,7 +1518,6 @@ boolean GLExtension_LoadFunctions(void)
 			EXTUNSUPPORTED(GLExtension_vertex_buffer_object);
 	}
 
-#ifdef HAVE_GL_FRAMEBUFFER
 	if (GLExtension_framebuffer_object)
 	{
 		const char *list[] =
@@ -2337,7 +1551,6 @@ boolean GLExtension_LoadFunctions(void)
 		else
 			EXTUNSUPPORTED(GLExtension_framebuffer_object);
 	}
-#endif
 
 	return true;
 }
@@ -2375,7 +1588,7 @@ static void PrintExtensions(const GLubyte *extensions)
 FILE *gllogstream;
 #endif
 
-#define DEBUG_TO_CONSOLE
+//#define DEBUG_TO_CONSOLE
 
 void GL_DBG_Printf(const char *format, ...)
 {
